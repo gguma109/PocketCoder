@@ -218,7 +218,8 @@ class RemoteClient(
                     }.toByteArray(Charsets.UTF_8)
                     if (current.streamInput) {
                         var c = current.inputConnection.get()
-                        if (c == null) {
+                        if (c == null || !c.isHealthy) {
+                            c?.close()
                             c = InputSocket(current.base, current.token)
                             current.inputConnection.set(c)
                         }

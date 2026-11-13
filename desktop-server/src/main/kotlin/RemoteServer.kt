@@ -73,7 +73,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.6.3")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.6.5")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -90,7 +90,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.3","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.5","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -149,7 +149,7 @@ fun main(args: Array<String>) {
             } catch (_: IllegalArgumentException) { sendError(ex, 400, "Invalid display index") }
         }
     }
-    val inputSlot = Semaphore(1)
+    val inputSlot = Semaphore(4)
     server.createContext("/input-stream") { ex ->
         guarded(ex, authorize, "POST") {
             if (!inputSlot.tryAcquire()) { sendError(ex, 409, "Input stream already active"); return@guarded }
