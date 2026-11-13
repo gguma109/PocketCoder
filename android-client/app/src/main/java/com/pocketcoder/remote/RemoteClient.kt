@@ -47,7 +47,15 @@ class RemoteClient(
         frameWorker.execute {
             try {
                 val streaming = withFrameConnection(open(current, "/health")) { c ->
-                    if (c.responseCode == 401 && !legacyMode) throw IOException("PC·휴대폰 Tailscale에 같은 계정으로 로그인하세요. 새 서버 0.3.0이 필요합니다.")
+                    if (c.responseCode == 401 && !legacyMode) {
+                        val mode = c.getHeaderField("X-PocketCoder-Auth")
+                        val version = c.getHeaderField("X-PocketCoder-Version")
+                        throw IOException(when {
+                            mode == "tailscale" -> "서버 $version 에서 기기 인증을 거부했습니다. PC Tailscale 상태를 확인하세요."
+                            mode == "token" -> "서버가 LAN 토큰 모드입니다. run-tailscale-windows.bat로 실행하세요."
+                            else -> "서버에서 인증을 거부했습니다. PC 서버를 0.3.1 이상으로 업데이트하세요."
+                        })
+                    }
                     if (c.responseCode != 200) throw IOException("서버 인증 실패 (HTTP ${c.responseCode})")
                     val json = c.inputStream.use { JSONObject(it.bufferedReader(Charsets.UTF_8).readText()) }
                     if (!legacyMode && json.optString("auth") != "tailscale") throw IOException("Tailscale 로그인 서버 0.3.0으로 업데이트하세요")

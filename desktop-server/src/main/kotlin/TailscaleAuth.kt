@@ -15,7 +15,11 @@ internal fun parseTailIdentity(json: String, address: String): TailIdentity {
     val node = root.getAsJsonObject("Node") ?: error("Missing Tailscale node")
     val user = profile.get("ID")?.asString ?: error("Missing Tailscale user ID")
     require(user.matches(Regex("[1-9][0-9]*")) && node.get("User")?.asString == user)
-    require(node.get("MachineAuthorized")?.asBoolean == true) { "Tailscale device is not authorized" }
+    // MachineAuthorized is not a reliable peer field: real authorized peers omit it.
+    // Trust the local daemon's WhoIs mapping plus the actual socket source, owner and expiry.
+    require(node.get("Expired")?.asBoolean != true) { "Tailscale device login expired" }
+    require(node.get("IsJailed")?.asBoolean != true) { "Tailscale device is jailed" }
+    require(node.get("UnsignedPeerAPIOnly")?.asBoolean != true) { "Restricted Tailscale peer" }
     val tags = node.get("Tags")
     require(tags == null || tags.isJsonNull || tags.asJsonArray.size() == 0) { "Tagged devices cannot use personal login" }
     require(node.getAsJsonArray("Addresses")?.any { it.asString == "$address/32" } == true) { "Tailscale address mismatch" }
@@ -81,8 +85,14 @@ internal fun tailscaleAuthSelfTest() {
     fun identity(user: String = "42", tags: String = "[]", authorized: Boolean = true, ip: String = "100.64.0.2/32") =
         """{"UserProfile":{"ID":$user},"Node":{"User":$user,"MachineAuthorized":$authorized,"Tags":$tags,"Addresses":["$ip"]}}"""
     check(parseTailIdentity(identity(), "100.64.0.2").userId == "42")
+    // Regression: Android peer WhoIs omits MachineAuthorized, unlike self WhoIs.
+    check(parseTailIdentity(identity().replace("\"MachineAuthorized\":true,", ""), "100.64.0.2").userId == "42")
+    check(parseTailIdentity(identity(authorized = false), "100.64.0.2").userId == "42")
     check(parseTailIdentity(identity().replace("\"Tags\":[]", "\"Tags\":null"), "100.64.0.2").userId == "42")
-    for (bad in listOf(identity(tags = "[\"tag:server\"]"), identity(authorized = false), identity(ip = "100.64.0.3/32"), "{}")) {
+    for (bad in listOf(identity(tags = "[\"tag:server\"]"), identity(ip = "100.64.0.3/32"), "{}",
+        identity().replace("\"Node\":{", "\"Node\":{\"Expired\":true,"),
+        identity().replace("\"Node\":{", "\"Node\":{\"IsJailed\":true,"),
+        identity().replace("\"Node\":{", "\"Node\":{\"UnsignedPeerAPIOnly\":true,"))) {
         check(runCatching { parseTailIdentity(bad, "100.64.0.2") }.isFailure)
     }
     val local = InetSocketAddress("100.64.0.1", 8765)

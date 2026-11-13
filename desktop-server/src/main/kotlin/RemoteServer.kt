@@ -62,20 +62,25 @@ fun main(args: Array<String>) {
     val authMode = option(args, "auth", if (isTailscaleAddress(bind)) "tailscale" else "token")
     require(authMode in listOf("tailscale", "token")) { "auth must be tailscale or token" }
     val token = if (authMode == "token") newToken() else null
-    val authorize: (HttpExchange) -> Boolean = if (authMode == "tailscale") {
+    val verifyIdentity: (HttpExchange) -> Boolean = if (authMode == "tailscale") {
         require(isTailscaleAddress(bind)) { "Login-only mode requires a Tailscale bind address" }
         val lookup = tailscaleLookup()
         val auth = TailscaleAuth(bind, lookup(bind), lookup)
         val checkIdentity: (HttpExchange) -> Boolean = { ex -> auth.allows(ex) }
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
+    val authorize: (HttpExchange) -> Boolean = { ex ->
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.3.1")
+        ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
+        verifyIdentity(ex)
+    }
     val app = DesktopController(robot, area)
     val server = HttpServer.create(InetSocketAddress(bind, port), 32)
     server.executor = Executors.newFixedThreadPool(8) { r -> Thread(r, "pocketcoder-http").apply { isDaemon = true } }
 
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"width":${area.width},"height":${area.height},"display":$display,"stream":"mjpeg","fps":$fps,"auth":"$authMode"}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.3.1","width":${area.width},"height":${area.height},"display":$display,"stream":"mjpeg","fps":$fps,"auth":"$authMode"}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->

@@ -1,7 +1,8 @@
 # PocketCoder — Kotlin 원격 개발 콘솔
 
 Android에서 Windows/macOS PC 화면을 보고 마우스와 키보드를 조작하는 MVP입니다.
-0.3.0은 **Tailscale 로그인만으로 연결**합니다. 토큰 입력이 필요 없습니다.
+0.3.1은 **Tailscale 로그인만으로 연결**합니다. 토큰 입력이 필요 없습니다.
+0.3.0의 정상 Android 기기 인증 거부 문제를 수정했습니다(WhoIs의 선택적 MachineAuthorized 필드).
 한 번 PC 주소를 입력해 연결하면 다음 앱 실행부터 자동 연결합니다.
 연속 MJPEG 스트리밍(기본 목표 15fps)과 트랙패드를 지원합니다.
 원본 Kotlin UI, JPEG 화면, 트랙패드, 클릭/우클릭/더블클릭/스크롤, 개발자 키보드,
