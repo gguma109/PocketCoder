@@ -19,7 +19,7 @@ class PocketCoderPC : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly JavaScriptSerializer json=new JavaScriptSerializer();
     readonly NotifyIcon tray=new NotifyIcon();
-    string ip,version="0.7.1"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
+    string ip,version="0.7.2"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
     static string Hash(string value) { using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-","").ToLowerInvariant().Substring(0,16); }
     string Instance { get { return Hash(Path.GetFullPath(Path.Combine(root,"pocketcoder-server.jar")).ToLowerInvariant()); } }
     PocketCoderPC() {
@@ -92,25 +92,56 @@ class PocketCoderPC : Form {
     async Task Act(string action){if(busy)return;busy=true;start.Enabled=false;stop.Enabled=false;status.Text=action=="Start"?"시작 중…":"종료 중…";try{
         var data=await Task.Run(()=>Run("-Action "+action));status.Text=Convert.ToString(data["message"]);if(!(bool)data["ok"])MessageBox.Show(this,status.Text,"PocketCoder");else owned=action=="Start";
     }catch(Exception e){MessageBox.Show(this,e.Message,"PocketCoder");}finally{busy=false;}await RefreshStatus();}
+    const string ReleaseDownloadPrefix="https://github.com/gguma109/PocketCoder/releases/download/";
+    static byte[] Download(string url,int timeout,long limit){
+        var request=(HttpWebRequest)WebRequest.Create(url);request.Proxy=null;request.Timeout=timeout;request.ReadWriteTimeout=timeout;request.UserAgent="PocketCoder-update-check";
+        using(var response=request.GetResponse())using(var input=response.GetResponseStream())using(var bytes=new MemoryStream()){
+            var buffer=new byte[65536];int count;while((count=input.Read(buffer,0,buffer.Length))>0){if(bytes.Length+count>limit)throw new IOException("Response too large");bytes.Write(buffer,0,count);}return bytes.ToArray();
+        }
+    }
+    // Returns {version, installerUrl, sha256, size} from the latest GitHub Release, or null.
+    string[] FetchLatestRelease(){
+        var release=json.Deserialize<Dictionary<string,object>>(Encoding.UTF8.GetString(Get("https://api.github.com/repos/gguma109/PocketCoder/releases/latest",8000)));
+        if((release.ContainsKey("draft")&&(bool)release["draft"])||(release.ContainsKey("prerelease")&&(bool)release["prerelease"]))return null;
+        var assets=new Dictionary<string,string>();
+        foreach(var item in (System.Collections.IEnumerable)release["assets"]){var asset=(Dictionary<string,object>)item;string url=Convert.ToString(asset["browser_download_url"]);if(url.StartsWith(ReleaseDownloadPrefix))assets[Convert.ToString(asset["name"])]=url;}
+        if(!assets.ContainsKey("pocketcoder-update.json"))return null;
+        var manifest=json.Deserialize<Dictionary<string,object>>(Encoding.UTF8.GetString(Get(assets["pocketcoder-update.json"],8000)));
+        var installer=(Dictionary<string,object>)manifest["installer"];
+        string name=Convert.ToString(installer["name"]),sha=Convert.ToString(installer["sha256"]).ToLowerInvariant();long size=Convert.ToInt64(installer["size"]);
+        if(!System.Text.RegularExpressions.Regex.IsMatch(name,@"^PocketCoder-Setup-[0-9.]+\.exe$")||!System.Text.RegularExpressions.Regex.IsMatch(sha,"^[0-9a-f]{64}$")||size<=0||size>400L*1024*1024||!assets.ContainsKey(name))return null;
+        return new string[]{Convert.ToString(manifest["serverVersion"]),assets[name],sha,size.ToString()};
+    }
     async Task CheckUpdates(bool manual){
         var stamp=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"PocketCoder","update-check.txt");
         if(!manual&&File.Exists(stamp)&&DateTime.UtcNow-File.GetLastWriteTimeUtc(stamp)<TimeSpan.FromDays(1))return;
+        string[] result;
         try{
-            var result=await Task.Run(()=>{
-                var rootData=json.Deserialize<Dictionary<string,object>>(Encoding.UTF8.GetString(Get("https://api.github.com/repos/gguma109/PocketCoder/actions/workflows/build-android-apk.yml/runs?branch=main&status=success&per_page=1",5000)));
-                Dictionary<string,object> run=null;foreach(var item in (System.Collections.IEnumerable)rootData["workflow_runs"]){run=(Dictionary<string,object>)item;break;}if(run==null)return null;string sha=Convert.ToString(run["head_sha"]);
-                if(!System.Text.RegularExpressions.Regex.IsMatch(sha,"^[a-f0-9]{40}$"))return null;
-                var manifest=json.Deserialize<Dictionary<string,object>>(Encoding.UTF8.GetString(Get("https://raw.githubusercontent.com/gguma109/PocketCoder/"+sha+"/updates.json",5000)));
-                return new string[]{Convert.ToString(manifest["serverVersion"]),Convert.ToString(run["html_url"])};
-            });
+            result=await Task.Run(()=>FetchLatestRelease());
             Directory.CreateDirectory(Path.GetDirectoryName(stamp));File.WriteAllText(stamp,DateTime.UtcNow.ToString("O"));
-            if(result!=null&&new Version(result[0])>new Version("0.7.1")){
-                updateLabel.Text="새 버전 "+result[0]+"이 있습니다.";
-                if(MessageBox.Show(this,"새 버전 "+result[0]+"을 다운로드하시겠습니까?","PocketCoder",MessageBoxButtons.YesNo)==DialogResult.Yes&&result[1].StartsWith("https://github.com/gguma109/PocketCoder/actions/runs/"))Process.Start(result[1]);
-            }else if(manual)MessageBox.Show(this,"현재 최신 버전입니다.","PocketCoder");
-        }catch{if(manual)MessageBox.Show(this,"업데이트 확인 실패 · 인터넷 연결을 확인하세요.","PocketCoder");}
+        }catch{if(manual)MessageBox.Show(this,"업데이트 확인 실패 · 인터넷 연결을 확인하세요.","PocketCoder");return;}
+        if(result==null||new Version(result[0])<=new Version(version)){if(manual)MessageBox.Show(this,"현재 최신 버전입니다.","PocketCoder");return;}
+        updateLabel.Text="새 버전 "+result[0]+"이 있습니다.";
+        if(MessageBox.Show(this,"새 버전 "+result[0]+"을 설치하시겠습니까?\n설치 중 서버가 잠시 종료되고, 설정은 유지됩니다.","PocketCoder 업데이트",MessageBoxButtons.YesNo)!=DialogResult.Yes)return;
+        try{
+            updateLabel.Text="업데이트 다운로드 중… (약 100MB)";
+            string url=result[1],expected=result[2];long size=long.Parse(result[3]);
+            var file=Path.Combine(Path.GetTempPath(),"PocketCoder-Setup-"+result[0]+".exe");
+            await Task.Run(()=>{
+                byte[] data=Download(url,120000,size);
+                if(data.LongLength!=size)throw new IOException("다운로드 크기가 맞지 않습니다.");
+                string actual;using(var sha=SHA256.Create())actual=BitConverter.ToString(sha.ComputeHash(data)).Replace("-","").ToLowerInvariant();
+                if(actual!=expected)throw new IOException("설치 파일 검증(SHA-256)에 실패했습니다.");
+                File.WriteAllBytes(file,data);
+            });
+            updateLabel.Text="설치 프로그램을 실행합니다…";
+            // The installer signals this window to exit (--prepare-update) and stops the server before replacing files.
+            Process.Start(new ProcessStartInfo(file){UseShellExecute=true});
+        }catch(Exception e){updateLabel.Text="업데이트 실패: "+e.Message;MessageBox.Show(this,"업데이트 실패: "+e.Message,"PocketCoder");}
     }
     [STAThread]static void Main(string[] args){
+        // GitHub requires TLS 1.2; .NET Framework builds without a target-framework attribute default to older protocols.
+        ServicePointManager.SecurityProtocol|=(SecurityProtocolType)3072;
         string eventName="Local\\PocketCoderExit-"+Hash(AppDomain.CurrentDomain.BaseDirectory.ToLowerInvariant());
         if(args.Length==1&&args[0]=="--prepare-update") { try { using(var existing=EventWaitHandle.OpenExisting(eventName))existing.Set();Thread.Sleep(300); } catch(WaitHandleCannotBeOpenedException){} return; }
         bool created;using(var mutex=new Mutex(true,"Local\\PocketCoderPC-"+Hash(AppDomain.CurrentDomain.BaseDirectory.ToLowerInvariant()),out created)){

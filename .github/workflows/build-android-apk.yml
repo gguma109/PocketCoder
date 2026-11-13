@@ -22,6 +22,24 @@ jobs:
         working-directory: android-client
     steps:
       - uses: actions/checkout@v4
+      - name: Verify every version string matches updates.json
+        working-directory: .
+        run: |
+          python - <<'PY'
+          import json, pathlib, re
+          v = json.loads(pathlib.Path('updates.json').read_text())
+          app, code, server = v['version'], v['androidVersionCode'], v['serverVersion']
+          checks = {
+              'android-client/app/build.gradle.kts': [f'versionCode = {code}', f'versionName = "{app}"'],
+              'desktop-server/src/main/kotlin/RemoteServer.kt': [f'"X-PocketCoder-Version", "{server}"', f'"version":"{server}"'],
+              'desktop-server/PocketCoderPC.cs': [f'version="{server}"'],
+              'desktop-server/PocketCoder.iss': [f'AppVersion={server}', f'PocketCoder-Setup-{server}'],
+              'desktop-server/build-windows-package.ps1': [f"version='{server}'"],
+          }
+          bad = [f'{f}: missing {s!r}' for f, needles in checks.items() for s in needles if s not in pathlib.Path(f).read_text(encoding='utf-8')]
+          assert not bad, '; '.join(bad)
+          print(f'Versions consistent: app {app} ({code}), server {server}')
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -130,7 +148,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $testRoot = [IO.Path]::GetFullPath((Join-Path $PWD 'installer-test'))
           if (!$testRoot.StartsWith($PWD.Path + [IO.Path]::DirectorySeparatorChar)) { throw 'Unsafe install test path' }
-          $setup = Join-Path $output 'PocketCoder-Setup-0.7.1.exe'
+          $version = (Get-Content updates.json -Raw | ConvertFrom-Json).serverVersion
+          $setup = Join-Path $output "PocketCoder-Setup-$version.exe"
           $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=',('/DIR="' + $testRoot + '"')) -WindowStyle Hidden -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw 'Silent installation test failed' }
           $originalPath = $env:PATH
@@ -153,6 +172,59 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pocketcoder-windows-installer
-          path: installer/PocketCoder-Setup-0.7.1.exe
+          path: installer/PocketCoder-Setup-*.exe
           if-no-files-found: error
           retention-days: 30
+  release:
+    # Publishes a public GitHub Release once per version so apps can update in place without a GitHub login.
+    needs: [apk, windows-pc]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide whether this version is already released
+        id: version
+        run: |
+          app=$(python3 -c "import json;print(json.load(open('updates.json'))['version'])")
+          server=$(python3 -c "import json;print(json.load(open('updates.json'))['serverVersion'])")
+          tag="v$app"
+          echo "app=$app" >> "$GITHUB_OUTPUT"; echo "server=$server" >> "$GITHUB_OUTPUT"; echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/download-artifact@v4
+        if: steps.version.outputs.exists == 'false'
+        with:
+          name: pocketcoder-android-apk
+          path: dist/apk
+      - uses: actions/download-artifact@v4
+        if: steps.version.outputs.exists == 'false'
+        with:
+          name: pocketcoder-windows-installer
+          path: dist/installer
+      - name: Create release with update manifest
+        if: steps.version.outputs.exists == 'false'
+        env:
+          APP: ${{ steps.version.outputs.app }}
+          SERVER: ${{ steps.version.outputs.server }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p out
+          cp dist/apk/app-release.apk "out/PocketCoder-$APP.apk"
+          cp "dist/installer/PocketCoder-Setup-$SERVER.exe" "out/PocketCoder-Setup-$SERVER.exe"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          app, server = os.environ['APP'], os.environ['SERVER']
+          code = json.load(open('updates.json'))['androidVersionCode']
+          def describe(name):
+              data = pathlib.Path('out', name).read_bytes()
+              return {'name': name, 'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
+          manifest = {'version': app, 'androidVersionCode': code, 'serverVersion': server,
+                      'apk': describe(f'PocketCoder-{app}.apk'), 'installer': describe(f'PocketCoder-Setup-{server}.exe')}
+          pathlib.Path('out/pocketcoder-update.json').write_text(json.dumps(manifest, indent=2))
+          print(json.dumps(manifest, indent=2))
+          PY
+          notes="휴대폰: PocketCoder-$APP.apk 설치 · PC: PocketCoder-Setup-$SERVER.exe 실행. 이후 업데이트는 각 앱의 '업데이트 확인'에서 바로 설치됩니다."
+          gh release create "$TAG" out/* --target "$GITHUB_SHA" --title "PocketCoder $APP" --notes "$notes" --latest

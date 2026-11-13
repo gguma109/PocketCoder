@@ -341,14 +341,44 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     if (update != null) android.app.AlertDialog.Builder(this).setTitle("PocketCoder ${update.version} 업데이트")
-                        .setMessage("새 버전이 있습니다. GitHub에서 APK를 내려받아 설치하세요.")
-                        .setPositiveButton("다운로드") { _, _ -> startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(update.url))) }
+                        .setMessage("새 버전이 있습니다. 지금 내려받아 설치할까요?\n설정은 그대로 유지됩니다.")
+                        .setPositiveButton("업데이트") { _, _ -> startUpdate(update) }
                         .setNegativeButton("나중에", null).show()
                     else if (manual) Toast.makeText(this, "현재 최신 버전입니다", Toast.LENGTH_SHORT).show()
                 }
             } catch (_: Exception) { if (manual) runOnUiThread { Toast.makeText(this, "업데이트 확인 실패 · 인터넷 연결을 확인하세요", Toast.LENGTH_SHORT).show() } }
         }, "pocketcoder-update").apply { isDaemon = true; start() }
     }
+    private var pendingUpdate: AvailableUpdate? = null
+    private fun startUpdate(update: AvailableUpdate) {
+        if (!packageManager.canRequestPackageInstalls()) {
+            // One-time Android permission; the download resumes automatically when the user comes back.
+            pendingUpdate = update
+            Toast.makeText(this, "‘이 출처의 앱 설치 허용’을 켠 뒤 돌아오세요", Toast.LENGTH_LONG).show()
+            startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:$packageName")))
+            return
+        }
+        pendingUpdate = null
+        val progress = TextView(this).apply { setPadding(dp(24), dp(16), dp(24), dp(8)); text = "다운로드 준비 중…" }
+        val dialog = android.app.AlertDialog.Builder(this).setTitle("PocketCoder ${update.version} 다운로드").setView(progress).setCancelable(false).show()
+        Thread({
+            val apk = java.io.File(cacheDir, "update.apk")
+            try {
+                UpdateChecker.download(update, apk) { percent -> runOnUiThread { progress.text = "다운로드 중… $percent%" } }
+                runOnUiThread { progress.text = "설치 화면을 여는 중…" }
+                UpdateInstaller.install(this, apk)
+                runOnUiThread { if (!isDestroyed) dialog.dismiss() }
+            } catch (e: Exception) {
+                apk.delete()
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    dialog.dismiss()
+                    Toast.makeText(this, "업데이트 실패: ${e.message ?: "인터넷 연결을 확인하세요"}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }, "pocketcoder-update-download").apply { isDaemon = true; start() }
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         val result = com.google.zxing.integration.android.IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
@@ -511,6 +541,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         client.resume()
+        pendingUpdate?.let { if (packageManager.canRequestPackageInstalls()) startUpdate(it) }
     }
 
     override fun onStop() {
