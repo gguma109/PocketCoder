@@ -32,7 +32,7 @@ internal class VideoEncoder(private val executable: String, val codec: String) {
                 (System.getenv("PATH") ?: "").split(File.pathSeparator).map { File(it.trim('"'), "ffmpeg.exe") }
             val executable = roots.firstOrNull { it.isFile }?.absolutePath ?: return null
             for (codec in listOf("h264_nvenc", "libx264")) {
-                val command = listOf(executable, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=128x72:rate=30", "-frames:v", "2") +
+                val command = listOf(executable, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=1280x720:rate=30", "-frames:v", "2") +
                     encodingOptions(codec) + listOf("-f", "null", "-")
                 val probe = ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start()
                 try { if (probe.waitFor(6, TimeUnit.SECONDS) && probe.exitValue() == 0) return VideoEncoder(executable, codec) }
