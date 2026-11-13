@@ -1,0 +1,49 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'android-client/**'
+      - 'desktop-server/**'
+      - '.github/workflows/build-android-apk.yml'
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: android-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug :app:lintDebug --stacktrace
+      - name: Build and verify desktop server
+        run: gradle --no-daemon -p ../desktop-server serverJar selfTest --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocketcoder-debug-apk
+          path: android-client/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocketcoder-desktop-server
+          path: |
+            desktop-server/pocketcoder-server.jar
+            desktop-server/run-windows.bat
+            desktop-server/run-macos.sh
+          if-no-files-found: error
+          retention-days: 30
