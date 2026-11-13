@@ -14,7 +14,7 @@ using System.Windows.Forms;
 
 // A viewer never starts/stops the local server. Authentication is enforced by the remote server.
 class RemoteViewer : Form {
-    readonly Panel canvas=new InputSurface(); readonly FlowLayoutPanel bar=new FlowLayoutPanel();
+    readonly InputSurface canvas=new InputSurface(); readonly FlowLayoutPanel bar=new FlowLayoutPanel();
     readonly Label state=new Label(); readonly Button claim=new Button(),menuButton=new Button(),displayMode=new Button();
     readonly HashSet<int> localShortcutUps=new HashSet<int>();
     string monitorHotkey=LoadSetting("monitorHotkey","Ctrl+Alt");int monitorCount;
@@ -44,7 +44,6 @@ class RemoteViewer : Form {
             if(dialog.ShowDialog(owner)!=DialogResult.OK)return;
             try{string address=ValidateAddress(box.Text); var health=ReadJson(address,"/health",null);
                 if(Convert.ToString(health["auth"])!="tailscale" || new Version(Convert.ToString(health["version"]))<new Version("0.8.3"))throw new Exception("원격 PC도 0.8.3 이상으로 업데이트해야 합니다.");
-                if(!health.ContainsKey("cursorlessVideo")||!Convert.ToBoolean(health["cursorlessVideo"]))throw new Exception("원격 PC 서버를 0.8.3 이상으로 업데이트하세요.");
                 if(Convert.ToString(health["video"])!="h264")throw new Exception("원격 PC의 H.264 인코더를 사용할 수 없습니다.");
                 foreach(var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())foreach(var local in nic.GetIPProperties().UnicastAddresses)if(local.Address.ToString()==address.Split(':')[0])throw new Exception("이 PC 자신의 주소입니다. 다른 PC의 Tailscale 주소를 입력하세요.");
                 Save("address",address);current=new RemoteViewer(address,health);current.Show();
@@ -67,6 +66,7 @@ class RemoteViewer : Form {
     RemoteViewer(string address,Dictionary<string,object> health){
         host=address;client=LoadSetting("client","");Guid id;if(!Guid.TryParse(client,out id)){client=Guid.NewGuid().ToString("N");Save("client",client);}
         AutoScaleMode=AutoScaleMode.None;Font=new Font("Malgun Gothic",10);Text="PocketCoder · 원격 PC · Ctrl+Alt+Shift+Q로 조작 해제";BackColor=Color.Black;ClientSize=new Size(1280,720);MinimumSize=new Size(640,360);
+        canvas.SuppressLocalCursor=delegate{return HideLocalPointer;};
         canvas.Dock=DockStyle.Fill;canvas.BackColor=Color.Black;Controls.Add(canvas);
         bar.Visible=false;bar.BackColor=Color.FromArgb(235,240,245);bar.Height=FixedDpiLayout.Px(54);bar.Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right;bar.Width=ClientSize.Width;bar.WrapContents=false;bar.AutoScroll=true;Controls.Add(bar);bar.BringToFront();
         menuButton.Text="메뉴";menuButton.BackColor=Color.FromArgb(255,205,92);menuButton.ForeColor=Color.Black;menuButton.UseVisualStyleBackColor=false;menuButton.AutoSize=true;menuButton.Size=new Size(FixedDpiLayout.Px(76),FixedDpiLayout.Px(36));menuButton.Location=new Point(ClientSize.Width-menuButton.Width-FixedDpiLayout.Px(10),FixedDpiLayout.Px(6));menuButton.Anchor=AnchorStyles.Top|AnchorStyles.Right;
@@ -169,6 +169,10 @@ class RemoteViewer : Form {
     static string ButtonName(int value){return value==1?"left":value==2?"right":"middle";}
     bool ViewerForeground {get{var foreground=GetForegroundWindow();return foreground!=IntPtr.Zero&&(foreground==Handle||foreground==videoWindow||IsChild(Handle,foreground)||GetAncestor(foreground,2)==Handle);}}
     bool ActiveInput {get{return mine&&armed&&!stopped&&(ViewerForeground||ContainsFocus);}}
+    // Hide only this window's local cursor over live remote pixels, never via ShowCursor's global counter.
+    bool HideLocalPointer {get{int x,y;return canvas!=null&&!stopped&&videoWindow!=IntPtr.Zero&&ViewerForeground&&PointerPosition(canvas.PointToClient(Cursor.Position),out x,out y);}}
+    protected override void WndProc(ref Message m){if(m.Msg==0x20&&InputSurface.ApplyCursor(ref m,HideLocalPointer))return;base.WndProc(ref m);}
+
     void InstallHooks(){if(keyboardHook!=IntPtr.Zero||stopped)return;keyboardHook=SetWindowsHookEx(13,keyboardProc,GetModuleHandle(null),0);mouseHook=SetWindowsHookEx(14,mouseProc,GetModuleHandle(null),0);if(keyboardHook==IntPtr.Zero){ViewerLog("hook installation failed: "+Marshal.GetLastWin32Error());Unhook();state.Text="입력 훅을 시작하지 못했습니다.";}}
     void Unhook(){if(keyboardHook!=IntPtr.Zero)UnhookWindowsHookEx(keyboardHook);if(mouseHook!=IntPtr.Zero)UnhookWindowsHookEx(mouseHook);keyboardHook=mouseHook=IntPtr.Zero;Cursor.Current=Cursors.Default;}
     IntPtr Keyboard(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){int vk=Marshal.ReadInt32(data),flags=Marshal.ReadInt32(data,8);
@@ -227,7 +231,7 @@ class RemoteViewer : Form {
         p.StartInfo.EnvironmentVariables["SDL_WINDOWS_DPI_SCALING"]="0";
         p.Start();return p;}
     static void StopProcess(ref Process slot){var p=Interlocked.Exchange(ref slot,null);if(p!=null){try{if(!p.HasExited)p.Kill();}catch{}try{p.Dispose();}catch{}}}
-    void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;int gen=generation;try{r=StreamRequest("/video?fps=60&quality=native&mbps=60&cursor=0&live=1");videoRequest=r;using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
+    void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;int gen=generation;try{r=StreamRequest("/video?fps=60&quality=native&mbps=60&cursor=1&live=1");videoRequest=r;using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50435631)throw new IOException("잘못된 영상 헤더");width=Int(input);height=Int(input);int fps=Int(input);if(width<1||width>16384||height<1||height>16384||fps<1||fps>240)throw new IOException("잘못된 영상 크기");
         Size target=Size.Empty;Invoke((Action)delegate{target=canvas.ClientSize;});p=Play((hardware?"-hwaccel d3d11va ":"")+"-loglevel error -noborder -x "+target.Width+" -y "+target.Height+" -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -sync ext -f h264 -i pipe:0");player=p;
         Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);SetWindowLong(videoWindow,-16,0x50000000);EnableWindow(videoWindow,false);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();canvas.Focus();});break;}Thread.Sleep(50);}});
@@ -239,7 +243,7 @@ class RemoteViewer : Form {
         while(!stopped&&sound){int size=Int(input);if(size<4||size>262144||size%4!=0)throw new IOException("오디오 패킷 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,size);p.StandardInput.BaseStream.Flush();}
     }}catch{}finally{if(r!=null)Forget(r);if(p!=null){try{if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(audio==p)audio=null;}}
     protected override void OnResize(EventArgs e){base.OnResize(e);if(resizeTimer!=null&&joined&&!stopped){resizeTimer.Stop();resizeTimer.Start();}try{if(videoWindow!=IntPtr.Zero)MoveWindow(videoWindow,0,0,canvas.Width,canvas.Height,true);}catch{}}
-    internal static void SelfTest(){if(ShortcutMonitor(50,new HashSet<int>{162,164},"Ctrl+Alt",4)!=1||ShortcutMonitor(50,new HashSet<int>{162},"Ctrl+Alt",4)!=-1||ShortcutMonitor(53,new HashSet<int>{162,164},"Ctrl+Alt",4)!=-1||ShortcutMonitor(49,new HashSet<int>{162,160},"Ctrl+Shift",2)!=0)throw new Exception("Monitor hotkey routing");InputTransportSelfTest();if(!EscapeChord(81,new HashSet<int>{162,164,160})||EscapeChord(81,new HashSet<int>{162,164})||EscapeChord(65,new HashSet<int>{162,164,160}))throw new Exception("Escape chord");if(ValidateAddress("100.64.0.1")!="100.64.0.1:8765")throw new Exception("Address");bool rejected=false;try{ValidateAddress("8.8.8.8");}catch{rejected=true;}if(!rejected)throw new Exception("Public address accepted");int x,y;if(MapPoint(new Point(10,10),new Size(1000,1000),1920,1080,out x,out y))throw new Exception("Letterbox");if(!MapPoint(new Point(500,500),new Size(1000,1000),1920,1080,out x,out y)||Math.Abs(x-5000)>20||Math.Abs(y-5000)>20)throw new Exception("Coordinates");using(var m=new MemoryStream(new byte[]{0x50,0x43,0x56,0x31})){if(Int(m)!=0x50435631)throw new Exception("Endian");}Console.WriteLine("PASS: viewer address / letterbox coordinates / wire header");}
+    internal static void SelfTest(){InputSurface.CursorSelfTest();if(ShortcutMonitor(50,new HashSet<int>{162,164},"Ctrl+Alt",4)!=1||ShortcutMonitor(50,new HashSet<int>{162},"Ctrl+Alt",4)!=-1||ShortcutMonitor(53,new HashSet<int>{162,164},"Ctrl+Alt",4)!=-1||ShortcutMonitor(49,new HashSet<int>{162,160},"Ctrl+Shift",2)!=0)throw new Exception("Monitor hotkey routing");InputTransportSelfTest();if(!EscapeChord(81,new HashSet<int>{162,164,160})||EscapeChord(81,new HashSet<int>{162,164})||EscapeChord(65,new HashSet<int>{162,164,160}))throw new Exception("Escape chord");if(ValidateAddress("100.64.0.1")!="100.64.0.1:8765")throw new Exception("Address");bool rejected=false;try{ValidateAddress("8.8.8.8");}catch{rejected=true;}if(!rejected)throw new Exception("Public address accepted");int x,y;if(MapPoint(new Point(10,10),new Size(1000,1000),1920,1080,out x,out y))throw new Exception("Letterbox");if(!MapPoint(new Point(500,500),new Size(1000,1000),1920,1080,out x,out y)||Math.Abs(x-5000)>20||Math.Abs(y-5000)>20)throw new Exception("Coordinates");using(var m=new MemoryStream(new byte[]{0x50,0x43,0x56,0x31})){if(Int(m)!=0x50435631)throw new Exception("Endian");}Console.WriteLine("PASS: viewer address / letterbox coordinates / wire header");}
     delegate IntPtr Hook(int code,IntPtr message,IntPtr data);
     [StructLayout(LayoutKind.Sequential)]struct MouseData{public Point point;public uint mouseData,flags,time;public UIntPtr extra;}
     [DllImport("user32.dll",SetLastError=true)]static extern IntPtr SetWindowsHookEx(int id,Hook callback,IntPtr module,uint thread);
@@ -280,5 +284,25 @@ internal static class FixedDpiLayout {
 }
 
 internal sealed class InputSurface : Panel {
+    internal Func<bool> SuppressLocalCursor;
     internal InputSurface(){SetStyle(ControlStyles.Selectable,true);TabStop=true;}
+    internal static bool ApplyCursor(ref Message m,bool hide){
+        if(m.Msg!=0x20||(m.LParam.ToInt64()&0xffff)!=1||!hide)return false;
+        SetCursor(IntPtr.Zero);m.Result=new IntPtr(1);return true;
+    }
+    protected override void WndProc(ref Message m){if(m.Msg==0x20&&ApplyCursor(ref m,SuppressLocalCursor!=null&&SuppressLocalCursor()))return;base.WndProc(ref m);}
+    [DllImport("user32.dll")]static extern IntPtr SetCursor(IntPtr cursor);
+    [DllImport("user32.dll")]static extern IntPtr GetCursor();
+    [DllImport("user32.dll")]static extern IntPtr SendMessage(IntPtr window,int message,IntPtr w,IntPtr l);
+    internal static void CursorSelfTest(){
+        IntPtr original=GetCursor();bool hide=true;
+        try{using(var surface=new InputSurface()){
+            surface.SuppressLocalCursor=delegate{return hide;};
+            SetCursor(Cursors.Arrow.Handle);
+            SendMessage(surface.Handle,0x20,surface.Handle,new IntPtr(1|(0x200<<16)));
+            if(GetCursor()!=IntPtr.Zero)throw new Exception("Local cursor remained over remote video");
+            hide=false;SendMessage(surface.Handle,0x20,surface.Handle,new IntPtr(1|(0x200<<16)));
+            if(GetCursor()==IntPtr.Zero)throw new Exception("Local cursor was not restored outside remote video");
+        }}finally{SetCursor(original);}
+    }
 }
