@@ -25,7 +25,7 @@ class PocketCoderPC : Form {
     PocketCoderPC(float previewScale=0) {
         AutoScaleMode=AutoScaleMode.None;
         Text="PocketCoder PC"; ClientSize=new Size(760,440); StartPosition=FormStartPosition.CenterScreen;
-        FormBorderStyle=FormBorderStyle.FixedDialog; MaximizeBox=false; Font=new Font("Malgun Gothic",10);
+        FormBorderStyle=FormBorderStyle.Sizable; MaximizeBox=true; MinimumSize=new Size(420,320); Font=new Font("Malgun Gothic",10);
         var title=AddLabel("PocketCoder 원격 연결",20,18,710,34); title.Font=new Font(Font.FontFamily,16,FontStyle.Bold);
         SetupLabel(status,"상태 확인 중…",20,67,440,35); SetupLabel(address,"Tailscale 주소 확인 중…",20,108,440,28);
         SetupLabel(dependencies,"준비 상태 확인 중…",20,145,440,48);
@@ -61,6 +61,7 @@ class PocketCoderPC : Form {
     }
     static void LayoutSelfTest(){
         foreach(float scale in new[]{1f,1.25f,1.5f,1.75f,2f,2.5f})using(var form=new PocketCoderPC(scale)){
+            if(form.FormBorderStyle!=FormBorderStyle.Sizable||!form.MaximizeBox)throw new Exception("Main window cannot resize");
             foreach(Control c in form.Controls){
                 if(c is Button){var text=TextRenderer.MeasureText(c.Text,c.Font);if(c.Width<text.Width+8||c.Height<text.Height+6)throw new Exception("Button clipped at "+scale+": "+c.Text);}
                 if(c is Label&&!String.IsNullOrEmpty(c.Text)){var measured=TextRenderer.MeasureText(c.Text,c.Font,new Size(c.Width,10000),TextFormatFlags.WordBreak);if(c.Height<measured.Height)throw new Exception("Label clipped at "+scale+": "+c.Text);}

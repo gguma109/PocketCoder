@@ -26,6 +26,7 @@ class RemoteViewer : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer(), resizeTimer=new System.Windows.Forms.Timer();
     volatile bool stopped,mine,sound=true; bool armed=true; static RemoteViewer current; IntPtr videoWindow; volatile int display,width=1920,height=1080,generation; bool hardware=true;
     volatile string position; long lastMove; int queueSize; bool full=true,polling,joined;
+    bool switching; int controlEpoch; HttpWebRequest videoRequest;
     long revision=-1; Process player,audio; IntPtr keyboardHook,mouseHook; Hook keyboardProc,mouseProc;
     [DllImport("user32.dll")]static extern bool SetProcessDPIAware();
     public static void EnableDpi(){SetProcessDPIAware();}
@@ -42,6 +43,7 @@ class RemoteViewer : Form {
             try{string address=ValidateAddress(box.Text); var health=ReadJson(address,"/health",null);
                 if(Convert.ToString(health["auth"])!="tailscale" || new Version(Convert.ToString(health["version"]))<new Version("0.8.0"))throw new Exception("Tailscale 모드의 0.8.0 이상 서버가 필요합니다.");
                 if(Convert.ToString(health["video"])!="h264")throw new Exception("원격 PC의 H.264 인코더를 사용할 수 없습니다.");
+                foreach(var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())foreach(var local in nic.GetIPProperties().UnicastAddresses)if(local.Address.ToString()==address.Split(':')[0])throw new Exception("이 PC 자신의 주소입니다. 다른 PC의 Tailscale 주소를 입력하세요.");
                 Save("address",address);current=new RemoteViewer(address,health);current.Show();
             }catch(Exception e){MessageBox.Show(owner,e.Message,"연결 실패");}
         }
@@ -66,35 +68,51 @@ class RemoteViewer : Form {
         bar.BackColor=Color.FromArgb(235,240,245);bar.Height=FixedDpiLayout.Px(54);bar.Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right;bar.Width=ClientSize.Width;bar.WrapContents=false;bar.AutoScroll=true;Controls.Add(bar);bar.BringToFront();
         state.AutoSize=true;state.Padding=new Padding(FixedDpiLayout.Px(4),FixedDpiLayout.Px(10),FixedDpiLayout.Px(4),0);bar.Controls.Add(state);
         claim.Text="조작 시작 / 가져오기";claim.AutoSize=true;claim.MinimumSize=new Size(FixedDpiLayout.Px(145),FixedDpiLayout.Px(34));claim.Click+=async delegate{armed=true;await Control("claim");};bar.Controls.Add(claim);
-        int count=Convert.ToInt32(health["displays"]);for(int i=0;i<count;i++){int index=i;Add("모니터 "+(i+1),async delegate{if(!mine)return;ReleaseHeld();try{var result=await Task.Run(()=>ReadJson(host,"/display","client="+client+"&index="+index));display=Convert.ToInt32(result["display"]);revision=Convert.ToInt64(result["displayRevision"]);Interlocked.Increment(ref generation);StopProcess(ref player);}catch(Exception e){state.Text=e.Message;}});}
+        int count=Convert.ToInt32(health["displays"]);for(int i=0;i<count;i++){int index=i;Add("모니터 "+(i+1),async delegate{await SwitchDisplay(index);});}
         Add("창 / 전체",delegate{full=!full;ApplyWindow();});Add("소리 켬 / 끔",delegate{sound=!sound;StopProcess(ref audio);if(sound)Task.Run((Action)AudioLoop);});Add("연결 종료",delegate{Close();});
         display=Convert.ToInt32(health["display"]);revision=Convert.ToInt64(health["displayRevision"]);
         keyboardProc=Keyboard;mouseProc=Mouse;Shown+=async delegate{ApplyWindow();await Control("join");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)AudioLoop);timer.Start();};
-        resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped){Interlocked.Increment(ref generation);StopProcess(ref player);}};
+        resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped)RestartVideo();};
         timer.Interval=1000;timer.Tick+=async delegate{var pointer=PointToClient(Cursor.Position);bar.Visible=!mine||pointer.Y<bar.Height+FixedDpiLayout.Px(6);await Poll();};
-        Deactivate+=delegate{SuspendInput();};Activated+=delegate{if(mine&&armed)InstallHooks();};
+        Deactivate+=delegate{BeginInvoke((Action)delegate{if(!ViewerForeground)SuspendInput();});};Activated+=delegate{if(mine&&armed)SetControl(true);};
         FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();Unhook();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
     }
     void Add(string text,EventHandler click){var b=new Button{Text=text,Height=FixedDpiLayout.Px(34),AutoSize=true,Padding=new Padding(FixedDpiLayout.Px(6))};b.Click+=click;bar.Controls.Add(b);}
     void ApplyWindow(){FormBorderStyle=full?FormBorderStyle.None:FormBorderStyle.Sizable;WindowState=full?FormWindowState.Maximized:FormWindowState.Normal;}
-    async Task Control(string action){try{var s=await Task.Run(()=>ReadJson(host,"/control",Fields(action)));SetControl(Convert.ToBoolean(s["mine"]));}catch(Exception e){state.Text=e.Message;SuspendInput();}}
-    void SetControl(bool value){if(mine&&!value)SuspendInput();mine=value;state.Text=mine?"조작 중 · Ctrl+Alt+Shift+Q 탈출":"보기 전용";if(mine&&armed&&ContainsFocus)InstallHooks();}
-    async Task Poll(){if(polling||stopped||!joined)return;polling=true;try{var s=await Task.Run(()=>ReadJson(host,"/status?client="+client,null));SetControl(Convert.ToBoolean(((Dictionary<string,object>)s["control"])["mine"]));
-        long next=Convert.ToInt64(s["displayRevision"]);display=Convert.ToInt32(s["display"]);if(next!=revision){revision=next;Interlocked.Increment(ref generation);StopProcess(ref player);}
+    async Task Control(string action){int epoch=++controlEpoch;try{var s=await Task.Run(()=>ReadJson(host,"/control",Fields(action)));if(epoch==controlEpoch)SetControl(Convert.ToBoolean(s["mine"]));}catch(Exception e){state.Text=e.Message;SuspendInput();}}
+    static void ViewerLog(string message){try{string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"PocketCoder","logs");Directory.CreateDirectory(folder);File.AppendAllText(Path.Combine(folder,"viewer.log"),DateTime.UtcNow.ToString("o")+" "+message+Environment.NewLine);}catch{}}
+    void SetControl(bool value){
+        if(mine!=value)ViewerLog(value?"control gained":"control lost");
+        if(mine&&!value)SuspendInput();mine=value;
+        if(!mine||!armed){state.Text="보기 전용 · 조작 시작을 누르세요";return;}
+        if(!ViewerForeground){state.Text="조작권 있음 · 이 창을 클릭하세요";return;}
+        InstallHooks();state.Text=keyboardHook!=IntPtr.Zero&&mouseHook!=IntPtr.Zero?"조작 중 · Ctrl+Alt+Shift+Q 탈출":"입력 준비 실패 · 로그 폴더를 확인하세요";
+    }
+
+    async Task Poll(){if(polling||stopped||!joined)return;polling=true;int epoch=controlEpoch,pollVideoGeneration=generation;try{var s=await Task.Run(()=>ReadJson(host,"/status?client="+client,null));if(epoch==controlEpoch)SetControl(Convert.ToBoolean(((Dictionary<string,object>)s["control"])["mine"]));
+        if(switching||pollVideoGeneration!=generation)return;long next=Convert.ToInt64(s["displayRevision"]);display=Convert.ToInt32(s["display"]);if(next!=revision){revision=next;RestartVideo();}
     }catch{SetControl(false);state.Text="연결 확인 중…";}finally{polling=false;}}
+    void RestartVideo(){Interlocked.Increment(ref generation);var request=videoRequest;if(request!=null)request.Abort();StopProcess(ref player);videoWindow=IntPtr.Zero;}
+    async Task SwitchDisplay(int index){
+        if(switching)return;switching=true;
+        try{if(!mine){armed=true;await Control("claim");}if(!mine){state.Text="조작권을 가져오지 못했습니다.";return;}
+            ReleaseHeld();var result=await Task.Run(()=>ReadJson(host,"/display","client="+client+"&index="+index));
+            display=Convert.ToInt32(result["display"]);revision=Convert.ToInt64(result["displayRevision"]);RestartVideo();
+        }catch(Exception e){state.Text="모니터 전환 실패: "+e.Message;}finally{switching=false;}
+    }
     void Send(string body){if(stopped)return;if(Interlocked.Increment(ref queueSize)>512){Interlocked.Decrement(ref queueSize);BeginInvoke((Action)delegate{SuspendInput();Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});});return;}events.Enqueue("client="+client+"&screen="+display+"&"+body);wake.Set();}
     static HttpWebRequest InputRequest(string address){var r=Request(address,"/input-stream",null);r.Method="POST";r.SendChunked=true;r.AllowWriteStreamBuffering=false;r.ContentType="application/x-www-form-urlencoded";r.ReadWriteTimeout=5000;return r;}
     static string Line(Stream input){var b=new StringBuilder();int c;while((c=input.ReadByte())!=-1){if(c==10)return b.ToString().TrimEnd('\r');if(b.Length>32768)throw new IOException("Header too large");b.Append((char)c);}throw new EndOfStreamException();}
     static void InputTransportSelfTest(){
-        var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
+        var firstInput=new ManualResetEventSlim(false);var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
         try{string address="127.0.0.1:"+((IPEndPoint)listener.LocalEndpoint).Port;
             var peer=Task.Run(()=>{using(var c=listener.AcceptTcpClient())using(var input=c.GetStream()){
                 input.ReadTimeout=5000;string first=Line(input);if(!first.StartsWith("POST /input-stream "))throw new Exception("Input path");while(Line(input)!=""){}
-                var body=new MemoryStream();while(true){int n=Convert.ToInt32(Line(input).Split(';')[0],16);if(n==0){Line(input);break;}var bytes=Bytes(input,n);body.Write(bytes,0,n);if(Line(input)!="")throw new Exception("Chunk framing");}
+                var body=new MemoryStream();while(true){int n=Convert.ToInt32(Line(input).Split(';')[0],16);if(n==0){Line(input);break;}var bytes=Bytes(input,n);body.Write(bytes,0,n);firstInput.Set();if(Line(input)!="")throw new Exception("Chunk framing");}
                 var reply=Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");input.Write(reply,0,reply.Length);
                 return Encoding.UTF8.GetString(body.ToArray());
             }});
-            var request=InputRequest(address);using(var output=request.GetRequestStream()){for(int i=0;i<100;i++){var bytes=Encoding.UTF8.GetBytes("client=test&screen=0&type=keydown&vk=255\n");output.Write(bytes,0,bytes.Length);output.Flush();}}
+            var request=InputRequest(address);using(var output=request.GetRequestStream()){for(int i=0;i<100;i++){var bytes=Encoding.UTF8.GetBytes("client=test&screen=0&type=keydown&vk=255\n");output.Write(bytes,0,bytes.Length);output.Flush();if(i==0&&!firstInput.Wait(2000))throw new Exception("Input buffered until connection closes");}}
             using(var response=request.GetResponse()){}if(!peer.Wait(5000)||peer.Result.Split(new[]{'\n'},StringSplitOptions.RemoveEmptyEntries).Length!=100)throw new Exception("Persistent input framing");
         }finally{listener.Stop();}
     }
@@ -103,13 +121,14 @@ class RemoteViewer : Form {
             try{r=InputRequest(host);
                 lock(requestLock){if(stopped)return;streams.Add(r);}
                 using(var output=r.GetRequestStream()){
+                    ViewerLog("input transport connected");
                     while(!stopped){string item;
                         if(!events.TryDequeue(out item)){item=Interlocked.Exchange(ref position,null);if(item==null){wake.WaitOne(8);continue;}}
                         else Interlocked.Decrement(ref queueSize);
                         var bytes=Encoding.UTF8.GetBytes(item+"\n");output.Write(bytes,0,bytes.Length);output.Flush();
                     }
                 }
-            }catch{if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{armed=false;SuspendInput();mine=false;state.Text="입력 재연결 · 조작 시작을 누르세요";Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});});}
+            }catch(Exception e){ViewerLog("input transport failed: "+e.GetType().Name+" "+e.Message);if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{armed=false;SuspendInput();mine=false;state.Text="입력 재연결 · 조작 시작을 누르세요";Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});});}
             finally{if(r!=null)Forget(r);}if(!stopped)Thread.Sleep(300);
         }
     }
@@ -117,15 +136,16 @@ class RemoteViewer : Form {
     void SuspendInput(){Unhook();ReleaseHeld();}
     static bool EscapeChord(int vk,HashSet<int> held){return vk==81&&(held.Contains(162)||held.Contains(163)||held.Contains(17))&&(held.Contains(164)||held.Contains(165)||held.Contains(18))&&(held.Contains(160)||held.Contains(161)||held.Contains(16));}
     static string ButtonName(int value){return value==1?"left":value==2?"right":"middle";}
-    bool ActiveInput {get{return mine&&armed&&!stopped&&GetForegroundWindow()==Handle;}}
-    void InstallHooks(){if(keyboardHook!=IntPtr.Zero||stopped)return;keyboardHook=SetWindowsHookEx(13,keyboardProc,GetModuleHandle(null),0);mouseHook=SetWindowsHookEx(14,mouseProc,GetModuleHandle(null),0);if(keyboardHook==IntPtr.Zero||mouseHook==IntPtr.Zero){Unhook();state.Text="입력 훅을 시작하지 못했습니다.";}}
+    bool ViewerForeground {get{var foreground=GetForegroundWindow();return foreground!=IntPtr.Zero&&(foreground==Handle||foreground==videoWindow||IsChild(Handle,foreground)||GetAncestor(foreground,2)==Handle);}}
+    bool ActiveInput {get{return mine&&armed&&!stopped&&ViewerForeground;}}
+    void InstallHooks(){if(keyboardHook!=IntPtr.Zero||stopped)return;keyboardHook=SetWindowsHookEx(13,keyboardProc,GetModuleHandle(null),0);mouseHook=SetWindowsHookEx(14,mouseProc,GetModuleHandle(null),0);if(keyboardHook==IntPtr.Zero||mouseHook==IntPtr.Zero){ViewerLog("hook installation failed: "+Marshal.GetLastWin32Error());Unhook();state.Text="입력 훅을 시작하지 못했습니다.";}}
     void Unhook(){if(keyboardHook!=IntPtr.Zero)UnhookWindowsHookEx(keyboardHook);if(mouseHook!=IntPtr.Zero)UnhookWindowsHookEx(mouseHook);keyboardHook=mouseHook=IntPtr.Zero;Cursor.Current=Cursors.Default;}
-    IntPtr Keyboard(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){int vk=Marshal.ReadInt32(data),flags=Marshal.ReadInt32(data,8);if((flags&16)!=0)return CallNextHookEx(IntPtr.Zero,code,message,data);
+    IntPtr Keyboard(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){int vk=Marshal.ReadInt32(data),flags=Marshal.ReadInt32(data,8);
         bool down=message.ToInt32()==256||message.ToInt32()==260;
         lock(heldLock){if(down&&EscapeChord(vk,keys)){BeginInvoke((Action)delegate{armed=false;SuspendInput();mine=false;Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});state.Text="보기 전용 · 로컬 복귀";});return new IntPtr(1);}if(down)keys.Add(vk);else keys.Remove(vk);}
         Send("type="+(down?"keydown":"keyup")+"&vk="+vk+"&extended="+(((flags&1)!=0)?"1":"0"));return new IntPtr(1);
     }return CallNextHookEx(IntPtr.Zero,code,message,data);}
-    IntPtr Mouse(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){var p=(MouseData)Marshal.PtrToStructure(data,typeof(MouseData));if((p.flags&1)!=0)return CallNextHookEx(IntPtr.Zero,code,message,data);if(bar.Visible&&bar.RectangleToScreen(bar.ClientRectangle).Contains(p.point)){if(buttons.Count>0)ReleaseHeld();return CallNextHookEx(IntPtr.Zero,code,message,data);}Point local=canvas.PointToClient(p.point);int x,y;
+    IntPtr Mouse(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){var p=(MouseData)Marshal.PtrToStructure(data,typeof(MouseData));if(PointToClient(p.point).Y<bar.Height+FixedDpiLayout.Px(6))bar.Visible=true;if(bar.Visible&&bar.RectangleToScreen(bar.ClientRectangle).Contains(p.point)){if(buttons.Count>0)ReleaseHeld();return CallNextHookEx(IntPtr.Zero,code,message,data);}Point local=canvas.PointToClient(p.point);int x,y;
         bool inside=MapPoint(local,canvas.ClientSize,width,height,out x,out y);if(!inside){Cursor.Current=Cursors.Default;if(buttons.Count>0)ReleaseHeld();return CallNextHookEx(IntPtr.Zero,code,message,data);}Cursor.Current=null;
         int msg=message.ToInt32();string pos="client="+client+"&screen="+display+"&type=pos&x="+x+"&y="+y;
         if(msg==512){long now=Stopwatch.GetTimestamp();if((now-lastMove)*1000/Stopwatch.Frequency>=8){lastMove=now;Interlocked.Exchange(ref position,pos);wake.Set();}return new IntPtr(1);}
@@ -140,12 +160,12 @@ class RemoteViewer : Form {
     void Forget(HttpWebRequest r){lock(requestLock)streams.Remove(r);r.Abort();}
     Process Play(string args){var path=Path.Combine(root,"bin","ffplay.exe");if(!File.Exists(path))throw new IOException("설치본의 bin\\ffplay.exe가 없습니다. 다시 설치하세요.");var p=new Process();p.StartInfo=new ProcessStartInfo(path,args){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true};p.Start();return p;}
     static void StopProcess(ref Process slot){var p=Interlocked.Exchange(ref slot,null);if(p!=null){try{if(!p.HasExited)p.Kill();}catch{}try{p.Dispose();}catch{}}}
-    void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;try{int gen=generation;r=StreamRequest("/video?fps=60&quality=native&mbps=60");using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
+    void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;int gen=generation;try{r=StreamRequest("/video?fps=60&quality=native&mbps=60");videoRequest=r;using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50435631)throw new IOException("잘못된 영상 헤더");width=Int(input);height=Int(input);int fps=Int(input);if(width<1||width>16384||height<1||height>16384||fps<1||fps>240)throw new IOException("잘못된 영상 크기");
         Size target=Size.Empty;Invoke((Action)delegate{target=canvas.ClientSize;});p=Play((hardware?"-hwaccel d3d11va ":"")+"-loglevel error -noborder -x "+target.Width+" -y "+target.Height+" -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -sync ext -f h264 -i pipe:0");player=p;
-        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);EnableWindow(videoWindow,false);SetWindowLong(embedded.MainWindowHandle,-16,0x50000000);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();});break;}Thread.Sleep(50);}});
+        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);EnableWindow(videoWindow,false);SetWindowLong(embedded.MainWindowHandle,-16,0x50000000);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();});break;}Thread.Sleep(50);}});
         while(!stopped&&gen==generation){int size=Int(input);Bytes(input,8);if(size<1||size>8388608)throw new IOException("영상 패킷 크기 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,b.Length);p.StandardInput.BaseStream.Flush();}
-    }}catch(Exception e){if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0)hardware=false;if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;}if(!stopped)Thread.Sleep(300);}}
+    }}catch(Exception e){if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0)hardware=false;if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;if(videoRequest==r)videoRequest=null;}if(!stopped&&gen==generation)Thread.Sleep(300);}}
     void AudioLoop(){HttpWebRequest r=null;Process p=null;try{r=StreamRequest("/audio");using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50434131)throw new IOException("잘못된 오디오 헤더");int rate=Int(input),channels=Int(input),bits=Int(input);if(rate<8000||rate>192000||channels!=2||bits!=16)throw new IOException("지원하지 않는 오디오 형식");
         p=Play("-loglevel error -nodisp -autoexit -fflags nobuffer -f s16le -ar "+rate+" -ac "+channels+" -i pipe:0");audio=p;
@@ -155,10 +175,12 @@ class RemoteViewer : Form {
     internal static void SelfTest(){InputTransportSelfTest();if(!EscapeChord(81,new HashSet<int>{162,164,160})||EscapeChord(81,new HashSet<int>{162,164})||EscapeChord(65,new HashSet<int>{162,164,160}))throw new Exception("Escape chord");if(ValidateAddress("100.64.0.1")!="100.64.0.1:8765")throw new Exception("Address");bool rejected=false;try{ValidateAddress("8.8.8.8");}catch{rejected=true;}if(!rejected)throw new Exception("Public address accepted");int x,y;if(MapPoint(new Point(10,10),new Size(1000,1000),1920,1080,out x,out y))throw new Exception("Letterbox");if(!MapPoint(new Point(500,500),new Size(1000,1000),1920,1080,out x,out y)||Math.Abs(x-5000)>20||Math.Abs(y-5000)>20)throw new Exception("Coordinates");using(var m=new MemoryStream(new byte[]{0x50,0x43,0x56,0x31})){if(Int(m)!=0x50435631)throw new Exception("Endian");}Console.WriteLine("PASS: viewer address / letterbox coordinates / wire header");}
     delegate IntPtr Hook(int code,IntPtr message,IntPtr data);
     [StructLayout(LayoutKind.Sequential)]struct MouseData{public Point point;public uint mouseData,flags,time;public UIntPtr extra;}
-    [DllImport("user32.dll")]static extern IntPtr SetWindowsHookEx(int id,Hook callback,IntPtr module,uint thread);
+    [DllImport("user32.dll",SetLastError=true)]static extern IntPtr SetWindowsHookEx(int id,Hook callback,IntPtr module,uint thread);
     [DllImport("user32.dll")]static extern bool UnhookWindowsHookEx(IntPtr hook);
     [DllImport("user32.dll")]static extern IntPtr CallNextHookEx(IntPtr hook,int code,IntPtr message,IntPtr data);
     [DllImport("user32.dll")]static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]static extern bool IsChild(IntPtr parent,IntPtr child);
+    [DllImport("user32.dll")]static extern IntPtr GetAncestor(IntPtr window,uint flags);
     [DllImport("kernel32.dll",CharSet=CharSet.Auto)]static extern IntPtr GetModuleHandle(string name);
     [DllImport("user32.dll")]static extern bool EnableWindow(IntPtr window,bool enabled);
     [DllImport("user32.dll")]static extern IntPtr SetParent(IntPtr child,IntPtr parent);
