@@ -22,6 +22,9 @@ internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boo
         setByteBuffer("csd-0", ByteBuffer.wrap(annexB(sps)))
         setByteBuffer("csd-1", ByteBuffer.wrap(annexB(pps)))
         setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2_097_152)
+        setInteger(MediaFormat.KEY_FRAME_RATE, reader.header.fps)
+        setFloat(MediaFormat.KEY_OPERATING_RATE, reader.header.fps.toFloat())
+        setInteger(MediaFormat.KEY_PRIORITY, 0)
         if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
     }
     val decoder = MediaCodec.createDecoderByType("video/avc")
