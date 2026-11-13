@@ -352,6 +352,16 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        client.resume()
+    }
+
+    override fun onStop() {
+        client.pause()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         client.shutdown()
         super.onDestroy()

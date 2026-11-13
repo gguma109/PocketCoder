@@ -18,6 +18,23 @@ import java.time.Duration
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class TrackPadViewTest {
+    @Test fun everyHighRefreshMoveIsDeliveredWithoutTheOld25msGate() {
+        val moves = mutableListOf<Pair<Int, Int>>()
+        val pad = TrackPadView(org.robolectric.RuntimeEnvironment.getApplication(), { x, y -> moves += x to y }, {}, {})
+        fun touch(action: Int, x: Float, time: Long) {
+            val event = MotionEvent.obtain(0, time, action, x, 50f, 0)
+            pad.onTouchEvent(event); event.recycle()
+        }
+        touch(MotionEvent.ACTION_DOWN, 20f, 0)
+        repeat(10) { i ->
+            ShadowSystemClock.advanceBy(Duration.ofMillis(8))
+            touch(MotionEvent.ACTION_MOVE, 22f + i * 2, (i + 1) * 8L)
+        }
+        touch(MotionEvent.ACTION_UP, 40f, 90)
+        assertEquals(10, moves.size)
+        assertTrue(moves.all { it.first > 0 && it.second == 0 })
+    }
+
     @Test fun verticalPadDragKeepsMovingMouseWithoutScrollingPage() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         try {

@@ -27,7 +27,6 @@ class TrackPadView(
     private var moved = false
     private var dual = false
     private var wheelAccum = 0f
-    private var previousMoveSentAt = 0L
 
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
@@ -55,7 +54,6 @@ class TrackPadView(
                 startX = e.x; startY = e.y
                 timeDown = SystemClock.uptimeMillis()
                 moved = false; dual = false; wheelAccum = 0f
-                previousMoveSentAt = 0L
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> { dual = true; lastY = e.y; return true }
@@ -68,8 +66,6 @@ class TrackPadView(
                     lastY = e.y; lastX = e.x
                 } else if (!dual) {
                     if (hypot((e.x - startX).toDouble(), (e.y - startY).toDouble()) > 12) moved = true
-                    if (SystemClock.uptimeMillis() - previousMoveSentAt < 25) return true
-                    previousMoveSentAt = SystemClock.uptimeMillis()
                     val dx = ((e.x - lastX) * 2.1).roundToInt().coerceIn(-200, 200)
                     val dy = ((e.y - lastY) * 2.1).roundToInt().coerceIn(-200, 200)
                     if (hypot((e.x - startX).toDouble(), (e.y - startY).toDouble()) > 12) moved = true

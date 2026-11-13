@@ -43,7 +43,7 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
     companion object {
         private fun encodingOptions(codec: String, fps: Int): List<String> =
             listOf("-c:v", codec) + if (codec == "h264_nvenc") {
-                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "16", "-b:v", "24000k", "-maxrate", "40000k", "-bufsize", "2000k", "-g", "$fps", "-bf", "0")
+                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "16", "-rc-lookahead", "0", "-delay", "0", "-b:v", "24000k", "-maxrate", "40000k", "-bufsize", "2000k", "-g", "$fps", "-bf", "0")
             } else {
                 listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "16", "-maxrate", "40000k", "-bufsize", "2000k", "-g", "30", "-bf", "0")
             }

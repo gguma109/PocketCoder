@@ -28,8 +28,7 @@ class RemoteClient(
     private data class Session(val id: Int, val base: String, val token: String, val input: InputBuffer = InputBuffer()) {
         @Volatile var streamInput = false
         @Volatile var selectedDisplay = 0
-        val inputConnection = AtomicReference<HttpURLConnection?>()
-        var inputOutput: java.io.OutputStream? = null
+        val inputConnection = AtomicReference<InputSocket?>()
     }
     private data class Frame(val session: Int, val bitmap: Bitmap)
     private val main = Handler(Looper.getMainLooper())
@@ -40,6 +39,9 @@ class RemoteClient(
     private val frameConnection = AtomicReference<HttpURLConnection?>()
     private val pendingFrame = AtomicReference<Frame?>()
     private val deliveryPosted = java.util.concurrent.atomic.AtomicBoolean(false)
+    private data class Target(val host: String, val token: String, val legacy: Boolean)
+    @Volatile private var target: Target? = null
+    @Volatile private var foreground = false
     @Volatile private var active = false
     @Volatile private var session: Session? = null
 
@@ -49,7 +51,9 @@ class RemoteClient(
             onState(false, if (legacyMode) "PC 주소 또는 인증 토큰을 확인하세요" else "PC Tailscale 주소를 확인하세요")
             return
         }
-        disconnect(silent = true)
+        target = Target(host, auth, legacyMode)
+        disconnect(silent = true, forget = false)
+        if (!foreground) return
         val current = Session(epoch.incrementAndGet(), "http://$host", if (legacyMode) auth.trim() else "")
         session = current
         state(current, false, "PC 접속 확인 중…")
@@ -133,7 +137,13 @@ class RemoteClient(
             } catch (e: Exception) {
                 if (isCurrent(current)) {
                     active = false
-                    state(current, false, e.message ?: "연결 실패")
+                    state(current, false, "${e.message ?: "연결 실패"} · 자동 재연결 중")
+                    main.postDelayed({
+                        val retry = target
+                        if (foreground && isCurrent(current) && !active && retry != null) {
+                            connect(retry.host, retry.token, retry.legacy)
+                        }
+                    }, 1500)
                 }
             }
         }
@@ -179,17 +189,11 @@ class RemoteClient(
                     if (current.streamInput) {
                         var c = current.inputConnection.get()
                         if (c == null) {
-                            c = open(current, "/input-stream", "POST").apply {
-                                doOutput = true
-                                setChunkedStreamingMode(1024)
-                                setRequestProperty("Content-Type", "application/x-pocketcoder-input")
-                            }
+                            c = InputSocket(current.base, current.token)
                             current.inputConnection.set(c)
-                            current.inputOutput = c.outputStream
                         }
-                        if (!isCurrent(current)) { c.disconnect(); break }
-                        val output = current.inputOutput ?: throw IOException("입력 연결 없음")
-                        output.write(encoded); output.write(10); output.flush()
+                        if (!isCurrent(current)) { current.inputConnection.getAndSet(null)?.close(); break }
+                        c.send(encoded)
                         continue
                     }
                     val c = open(current, "/input", "POST")
@@ -202,20 +206,20 @@ class RemoteClient(
                         c.inputStream.use { it.readBytes() }
                     } finally { c.disconnect() }
                 } catch (e: Exception) {
-                    current.inputConnection.getAndSet(null)?.disconnect()
-                    current.inputOutput = null
+                    current.inputConnection.getAndSet(null)?.close()
                     if (isCurrent(current) && active) state(current, true, "입력 오류: ${e.message}")
                 }
             }
         }
     }
 
-    fun disconnect(silent: Boolean = false) {
+    fun disconnect(silent: Boolean = false, forget: Boolean = true) {
+        if (forget) target = null
         active = false
         val id = epoch.incrementAndGet()
         val previous = session
         session = null
-        previous?.inputConnection?.getAndSet(null)?.let { connection -> closeWorker.execute { connection.disconnect() } }
+        previous?.inputConnection?.getAndSet(null)?.close()
         pendingFrame.getAndSet(null)?.bitmap?.recycle()
         val connection = frameConnection.getAndSet(null)
         if (connection != null) closeWorker.execute { connection.disconnect() }
@@ -241,6 +245,18 @@ class RemoteClient(
             } catch (e: Exception) { state(current, true, e.message ?: "모니터 변경 실패") }
             finally { c.disconnect() }
         }
+    }
+
+    fun pause() {
+        foreground = false
+        disconnect(silent = true, forget = false)
+        onState(false, "앱 복귀 시 자동 연결")
+    }
+
+    fun resume() {
+        foreground = true
+        val previous = target ?: return
+        connect(previous.host, previous.token, previous.legacy)
     }
 
     fun shutdown() {
