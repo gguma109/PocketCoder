@@ -227,12 +227,13 @@ class MainActivity : Activity() {
         address = entry("PC Tailscale IP:포트", false)
         address.setText(getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("address", ""))
         config.addView(address, bottomMargin(8))
-        config.addView(tile("PC QR 스캔으로 연결", navy, gold, -1, 40) {
+        // Keep the QR action the same size as "PC 연결"; a plain bottomMargin() would reset the height to wrap_content.
+        config.addView(tile("PC QR 스캔으로 연결", navy, gold, -1, 44) {
             com.google.zxing.integration.android.IntentIntegrator(this)
                 .setDesiredBarcodeFormats(com.google.zxing.integration.android.IntentIntegrator.QR_CODE)
                 .setPrompt("PC 제어 창의 연결 QR을 비춰주세요")
                 .setBeepEnabled(false).setOrientationLocked(false).initiateScan()
-        }, bottomMargin(8))
+        }, LinearLayout.LayoutParams(match, dp(44)).apply { bottomMargin = dp(8) })
         secret = entry("PC 서버에 표시된 인증 토큰", true).apply {
             visibility = View.GONE; isSaveEnabled = false
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
