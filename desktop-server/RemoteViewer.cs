@@ -25,9 +25,12 @@ class RemoteViewer : Form {
     readonly HashSet<int> keys=new HashSet<int>(),buttons=new HashSet<int>();
     readonly object heldLock=new object(),requestLock=new object();
     readonly List<HttpWebRequest> streams=new List<HttpWebRequest>();
+    readonly ScopedCursorVisibility localCursor=new ScopedCursorVisibility();
+    readonly System.Windows.Forms.Timer cursorTimer=new System.Windows.Forms.Timer();
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer(), resizeTimer=new System.Windows.Forms.Timer();
     volatile bool stopped,mine,sound=true; bool armed=true; static RemoteViewer current; IntPtr videoWindow; volatile int display,width=1920,height=1080,generation; bool hardware=!String.Equals(LoadSetting("compatVideo","false"),"true",StringComparison.OrdinalIgnoreCase);
     volatile string position; long lastMove; int queueSize; bool full=true,polling,joined;
+    uint rendererThread;
     bool switching; int controlEpoch; HttpWebRequest videoRequest;
     long revision=-1; Process player,audio; IntPtr keyboardHook,mouseHook; Hook keyboardProc,mouseProc; int mouseObserved,mouseForwarded; int diagnosticTick;
     [DllImport("user32.dll")]static extern bool SetProcessDPIAware();
@@ -83,10 +86,11 @@ class RemoteViewer : Form {
         canvas.MouseWheel+=CanvasWheel;MouseWheel+=CanvasWheel;
         canvas.MouseCaptureChanged+=delegate{if(!canvas.Capture&&buttons.Count>0)ReleaseHeld();};
         keyboardProc=Keyboard;mouseProc=ObserveMouse;Shown+=async delegate{ApplyWindow();await Control("claim");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)AudioLoop);timer.Start();};
+        cursorTimer.Interval=16;cursorTimer.Tick+=delegate{UpdateLocalCursor();};cursorTimer.Start();
         resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped)RestartVideo();};
         timer.Interval=1000;timer.Tick+=async delegate{if(++diagnosticTick%5==0)ViewerLog("mouse observed="+mouseObserved+" forwarded="+mouseForwarded+" active="+ActiveInput+" armed="+armed);await Poll();};
         Deactivate+=delegate{BeginInvoke((Action)delegate{if(!ViewerForeground)SuspendInput();});};Activated+=delegate{if(mine&&armed)SetControl(true);};
-        FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();Unhook();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
+        FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();cursorTimer.Stop();DetachRendererInput();Unhook();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
     }
     void Add(string text,EventHandler click){var b=new Button{Text=text,Height=FixedDpiLayout.Px(34),AutoSize=true,Padding=new Padding(FixedDpiLayout.Px(6))};b.Click+=click;bar.Controls.Add(b);}
     void ApplyWindow(){FormBorderStyle=full?FormBorderStyle.None:FormBorderStyle.Sizable;WindowState=full?FormWindowState.Maximized:FormWindowState.Normal;}
@@ -103,7 +107,7 @@ class RemoteViewer : Form {
     async Task Poll(){if(polling||stopped||!joined)return;polling=true;int epoch=controlEpoch,pollVideoGeneration=generation;try{var s=await Task.Run(()=>ReadJson(host,"/status?client="+client,null));if(epoch==controlEpoch)SetControl(Convert.ToBoolean(((Dictionary<string,object>)s["control"])["mine"]));
         if(switching||pollVideoGeneration!=generation)return;long next=Convert.ToInt64(s["displayRevision"]);display=Convert.ToInt32(s["display"]);if(next!=revision){revision=next;RestartVideo();}
     }catch{SetControl(false);state.Text="연결 확인 중…";}finally{polling=false;}}
-    void RestartVideo(){Interlocked.Increment(ref generation);var request=videoRequest;if(request!=null)request.Abort();StopProcess(ref player);videoWindow=IntPtr.Zero;}
+    void RestartVideo(){DetachRendererInput();Interlocked.Increment(ref generation);var request=videoRequest;if(request!=null)request.Abort();StopProcess(ref player);videoWindow=IntPtr.Zero;}
     async Task SwitchDisplay(int index){
         if(switching)return;switching=true;
         try{if(!mine){armed=true;await Control("claim");}if(!mine){state.Text="조작권을 가져오지 못했습니다.";return;}
@@ -169,12 +173,15 @@ class RemoteViewer : Form {
     static string ButtonName(int value){return value==1?"left":value==2?"right":"middle";}
     bool ViewerForeground {get{var foreground=GetForegroundWindow();return foreground!=IntPtr.Zero&&(foreground==Handle||foreground==videoWindow||IsChild(Handle,foreground)||GetAncestor(foreground,2)==Handle);}}
     bool ActiveInput {get{return mine&&armed&&!stopped&&(ViewerForeground||ContainsFocus);}}
-    // Hide only this window's local cursor over live remote pixels, never via ShowCursor's global counter.
+    // A balanced thread/input-queue visibility scope also covers the embedded SDL child.
+    // WM_SETCURSOR alone is insufficient when the renderer owns cursor updates.
     bool HideLocalPointer {get{int x,y;return canvas!=null&&!stopped&&videoWindow!=IntPtr.Zero&&ViewerForeground&&PointerPosition(canvas.PointToClient(Cursor.Position),out x,out y);}}
+    void DetachRendererInput(){localCursor.SetHidden(false);if(rendererThread!=0){AttachThreadInput(GetCurrentThreadId(),rendererThread,false);rendererThread=0;}}
+    void UpdateLocalCursor(){bool hide=HideLocalPointer;bool changed=localCursor.Hidden!=hide;localCursor.SetHidden(hide);if(changed){ViewerLog("local cursor hidden="+hide+" "+ScopedCursorVisibility.VisibleState());}}
     protected override void WndProc(ref Message m){if(m.Msg==0x20&&InputSurface.ApplyCursor(ref m,HideLocalPointer))return;base.WndProc(ref m);}
 
     void InstallHooks(){if(keyboardHook!=IntPtr.Zero||stopped)return;keyboardHook=SetWindowsHookEx(13,keyboardProc,GetModuleHandle(null),0);mouseHook=SetWindowsHookEx(14,mouseProc,GetModuleHandle(null),0);if(keyboardHook==IntPtr.Zero){ViewerLog("hook installation failed: "+Marshal.GetLastWin32Error());Unhook();state.Text="입력 훅을 시작하지 못했습니다.";}}
-    void Unhook(){if(keyboardHook!=IntPtr.Zero)UnhookWindowsHookEx(keyboardHook);if(mouseHook!=IntPtr.Zero)UnhookWindowsHookEx(mouseHook);keyboardHook=mouseHook=IntPtr.Zero;Cursor.Current=Cursors.Default;}
+    void Unhook(){if(keyboardHook!=IntPtr.Zero)UnhookWindowsHookEx(keyboardHook);if(mouseHook!=IntPtr.Zero)UnhookWindowsHookEx(mouseHook);keyboardHook=mouseHook=IntPtr.Zero;localCursor.SetHidden(false);Cursor.Current=Cursors.Default;}
     IntPtr Keyboard(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){int vk=Marshal.ReadInt32(data),flags=Marshal.ReadInt32(data,8);
         bool down=message.ToInt32()==256||message.ToInt32()==260;
         if(down&&localShortcutUps.Contains(vk))return new IntPtr(1);
@@ -234,7 +241,7 @@ class RemoteViewer : Form {
     void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;int gen=generation;try{r=StreamRequest("/video?fps=60&quality=native&mbps=60&cursor=1&live=1");videoRequest=r;using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50435631)throw new IOException("잘못된 영상 헤더");width=Int(input);height=Int(input);int fps=Int(input);if(width<1||width>16384||height<1||height>16384||fps<1||fps>240)throw new IOException("잘못된 영상 크기");
         Size target=Size.Empty;Invoke((Action)delegate{target=canvas.ClientSize;});p=Play((hardware?"-hwaccel d3d11va ":"")+"-loglevel error -noborder -x "+target.Width+" -y "+target.Height+" -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -sync ext -f h264 -i pipe:0");player=p;
-        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);SetWindowLong(videoWindow,-16,0x50000000);EnableWindow(videoWindow,false);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();canvas.Focus();});break;}Thread.Sleep(50);}});
+        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;DetachRendererInput();videoWindow=embedded.MainWindowHandle;uint rendererProcess;uint thread=GetWindowThreadProcessId(videoWindow,out rendererProcess);if(thread!=GetCurrentThreadId()&&AttachThreadInput(GetCurrentThreadId(),thread,true))rendererThread=thread;SetParent(videoWindow,canvas.Handle);SetWindowLong(videoWindow,-16,0x50000000);EnableWindow(videoWindow,false);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();canvas.Focus();});break;}Thread.Sleep(50);}});
         while(!stopped&&gen==generation){int size=Int(input);Bytes(input,8);if(size<1||size>8388608)throw new IOException("영상 패킷 크기 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,b.Length);p.StandardInput.BaseStream.Flush();}
     }}catch(Exception e){if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0){hardware=false;if(IsHandleCreated&&!stopped)BeginInvoke((Action)delegate{displayMode.Text="표시: 호환";});}if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;if(videoRequest==r)videoRequest=null;}if(!stopped&&gen==generation)Thread.Sleep(300);}}
     void AudioLoop(){HttpWebRequest r=null;Process p=null;try{r=StreamRequest("/audio");using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
@@ -243,7 +250,7 @@ class RemoteViewer : Form {
         while(!stopped&&sound){int size=Int(input);if(size<4||size>262144||size%4!=0)throw new IOException("오디오 패킷 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,size);p.StandardInput.BaseStream.Flush();}
     }}catch{}finally{if(r!=null)Forget(r);if(p!=null){try{if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(audio==p)audio=null;}}
     protected override void OnResize(EventArgs e){base.OnResize(e);if(resizeTimer!=null&&joined&&!stopped){resizeTimer.Stop();resizeTimer.Start();}try{if(videoWindow!=IntPtr.Zero)MoveWindow(videoWindow,0,0,canvas.Width,canvas.Height,true);}catch{}}
-    internal static void SelfTest(){InputSurface.CursorSelfTest();if(ShortcutMonitor(50,new HashSet<int>{162,164},"Ctrl+Alt",4)!=1||ShortcutMonitor(50,new HashSet<int>{162},"Ctrl+Alt",4)!=-1||ShortcutMonitor(53,new HashSet<int>{162,164},"Ctrl+Alt",4)!=-1||ShortcutMonitor(49,new HashSet<int>{162,160},"Ctrl+Shift",2)!=0)throw new Exception("Monitor hotkey routing");InputTransportSelfTest();if(!EscapeChord(81,new HashSet<int>{162,164,160})||EscapeChord(81,new HashSet<int>{162,164})||EscapeChord(65,new HashSet<int>{162,164,160}))throw new Exception("Escape chord");if(ValidateAddress("100.64.0.1")!="100.64.0.1:8765")throw new Exception("Address");bool rejected=false;try{ValidateAddress("8.8.8.8");}catch{rejected=true;}if(!rejected)throw new Exception("Public address accepted");int x,y;if(MapPoint(new Point(10,10),new Size(1000,1000),1920,1080,out x,out y))throw new Exception("Letterbox");if(!MapPoint(new Point(500,500),new Size(1000,1000),1920,1080,out x,out y)||Math.Abs(x-5000)>20||Math.Abs(y-5000)>20)throw new Exception("Coordinates");using(var m=new MemoryStream(new byte[]{0x50,0x43,0x56,0x31})){if(Int(m)!=0x50435631)throw new Exception("Endian");}Console.WriteLine("PASS: viewer address / letterbox coordinates / wire header");}
+    internal static void SelfTest(){InputSurface.CursorSelfTest();ScopedCursorVisibility.SelfTest();if(ShortcutMonitor(50,new HashSet<int>{162,164},"Ctrl+Alt",4)!=1||ShortcutMonitor(50,new HashSet<int>{162},"Ctrl+Alt",4)!=-1||ShortcutMonitor(53,new HashSet<int>{162,164},"Ctrl+Alt",4)!=-1||ShortcutMonitor(49,new HashSet<int>{162,160},"Ctrl+Shift",2)!=0)throw new Exception("Monitor hotkey routing");InputTransportSelfTest();if(!EscapeChord(81,new HashSet<int>{162,164,160})||EscapeChord(81,new HashSet<int>{162,164})||EscapeChord(65,new HashSet<int>{162,164,160}))throw new Exception("Escape chord");if(ValidateAddress("100.64.0.1")!="100.64.0.1:8765")throw new Exception("Address");bool rejected=false;try{ValidateAddress("8.8.8.8");}catch{rejected=true;}if(!rejected)throw new Exception("Public address accepted");int x,y;if(MapPoint(new Point(10,10),new Size(1000,1000),1920,1080,out x,out y))throw new Exception("Letterbox");if(!MapPoint(new Point(500,500),new Size(1000,1000),1920,1080,out x,out y)||Math.Abs(x-5000)>20||Math.Abs(y-5000)>20)throw new Exception("Coordinates");using(var m=new MemoryStream(new byte[]{0x50,0x43,0x56,0x31})){if(Int(m)!=0x50435631)throw new Exception("Endian");}Console.WriteLine("PASS: viewer address / letterbox coordinates / wire header");}
     delegate IntPtr Hook(int code,IntPtr message,IntPtr data);
     [StructLayout(LayoutKind.Sequential)]struct MouseData{public Point point;public uint mouseData,flags,time;public UIntPtr extra;}
     [DllImport("user32.dll",SetLastError=true)]static extern IntPtr SetWindowsHookEx(int id,Hook callback,IntPtr module,uint thread);
@@ -254,6 +261,9 @@ class RemoteViewer : Form {
     [DllImport("user32.dll")]static extern bool IsChild(IntPtr parent,IntPtr child);
     [DllImport("user32.dll")]static extern IntPtr GetAncestor(IntPtr window,uint flags);
     [DllImport("kernel32.dll",CharSet=CharSet.Auto)]static extern IntPtr GetModuleHandle(string name);
+    [DllImport("user32.dll")]static extern bool AttachThreadInput(uint from,uint to,bool attach);
+    [DllImport("user32.dll")]static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
+    [DllImport("kernel32.dll")]static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")]static extern bool EnableWindow(IntPtr window,bool enabled);
     [DllImport("user32.dll")]static extern IntPtr SetParent(IntPtr child,IntPtr parent);
     [DllImport("user32.dll")]static extern int SetWindowLong(IntPtr handle,int index,int value);
@@ -304,5 +314,44 @@ internal sealed class InputSurface : Panel {
             hide=false;SendMessage(surface.Handle,0x20,surface.Handle,new IntPtr(1|(0x200<<16)));
             if(GetCursor()==IntPtr.Zero)throw new Exception("Local cursor was not restored outside remote video");
         }}finally{SetCursor(original);}
+    }
+}
+
+
+// ShowCursor is scoped to a thread/input queue. Record every decrement and undo exactly
+// those calls; never force the process-wide/system cursor shape or force-show on exit.
+internal sealed class ScopedCursorVisibility : IDisposable {
+    int hides;
+    internal bool Hidden {get{return hides!=0;}}
+    internal void SetHidden(bool hidden){
+        if(hidden){
+            // SDL can change the shared queue's show count after reparent/focus changes.
+            // Probe on every refresh; undo the probe if the queue was already hidden.
+            int count=ShowCursor(false);
+            if(count < -1&&hides!=0)ShowCursor(true);
+            else{hides++;while(count>=0&&hides<64){count=ShowCursor(false);hides++;}}
+            SetCursor(IntPtr.Zero);
+        }
+        else{while(hides>0){ShowCursor(true);hides--;}}
+    }
+    public void Dispose(){SetHidden(false);}
+    [StructLayout(LayoutKind.Sequential)]struct CursorInfo {public int size,flags;public IntPtr cursor;public Point position;}
+    [DllImport("user32.dll")]static extern IntPtr SetCursor(IntPtr cursor);
+    [DllImport("user32.dll")]static extern int ShowCursor(bool show);
+    [DllImport("user32.dll")]static extern bool GetCursorInfo(ref CursorInfo info);
+    internal static string VisibleState(){var info=new CursorInfo();info.size=Marshal.SizeOf(info);return GetCursorInfo(ref info)?"visible="+((info.flags&1)!=0):"visibility unavailable";}
+    internal static void SelfTest(){
+        int baseline=ShowCursor(true);ShowCursor(false);baseline--;
+        using(var scope=new ScopedCursorVisibility()){
+            scope.SetHidden(true);scope.SetHidden(true);
+            int hidden=ShowCursor(true);ShowCursor(false);
+            if(hidden>0)throw new Exception("Cursor visibility scope did not hide");
+            scope.SetHidden(false);scope.SetHidden(false);
+            int restored=ShowCursor(true);ShowCursor(false);
+            if(restored-1!=baseline)throw new Exception("Cursor visibility counter not balanced");
+            scope.SetHidden(true);
+        }
+        int disposed=ShowCursor(true);ShowCursor(false);
+        if(disposed-1!=baseline)throw new Exception("Cursor visibility not restored on dispose");
     }
 }
