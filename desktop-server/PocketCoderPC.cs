@@ -19,7 +19,7 @@ class PocketCoderPC : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly JavaScriptSerializer json=new JavaScriptSerializer();
     readonly NotifyIcon tray=new NotifyIcon();
-    string ip,version="0.7.3"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
+    string ip,version="0.8.0"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
     static string Hash(string value) { using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-","").ToLowerInvariant().Substring(0,16); }
     string Instance { get { return Hash(Path.GetFullPath(Path.Combine(root,"pocketcoder-server.jar")).ToLowerInvariant()); } }
     PocketCoderPC() {
@@ -43,6 +43,7 @@ class PocketCoderPC : Form {
             if(File.Exists(exe))Process.Start(exe);else Process.Start("https://tailscale.com/download/windows");
         };
         var hide=new Button();SetupButton(hide,"트레이로 숨기기",216,370,180);hide.Click+=delegate {Hide();};
+        var viewer=new Button();SetupButton(viewer,"다른 PC 보기",480,380,256);viewer.Click+=delegate{RemoteViewer.Open(this);};
         SetupLabel(updateLabel,"",20,416,710,22);updateLabel.Font=new Font(Font.FontFamily,9);
         var menu=new ContextMenuStrip();menu.Items.Add("열기",null,delegate{ShowWindow();});
         menu.Items.Add("서버 시작",null,async delegate{await Act("Start");});menu.Items.Add("서버 종료",null,async delegate{await Act("Stop");});
@@ -153,6 +154,7 @@ class PocketCoderPC : Form {
         }catch(Exception e){updateLabel.Text="업데이트 실패: "+e.Message;MessageBox.Show(this,"업데이트 실패: "+e.Message,"PocketCoder");}
     }
     [STAThread]static void Main(string[] args){
+        if(args.Length==1&&args[0]=="--viewer-self-test"){RemoteViewer.SelfTest();return;}
         // GitHub requires TLS 1.2; .NET Framework builds without a target-framework attribute default to older protocols.
         ServicePointManager.SecurityProtocol|=(SecurityProtocolType)3072;
         string eventName="Local\\PocketCoderExit-"+Hash(AppDomain.CurrentDomain.BaseDirectory.ToLowerInvariant());

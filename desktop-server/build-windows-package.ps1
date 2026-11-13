@@ -1,4 +1,4 @@
-param([string]$Payload='windows-pc')
+﻿param([string]$Payload='windows-pc')
 $ErrorActionPreference='Stop'
 $payloadRoot=[IO.Path]::GetFullPath($Payload)
 if(!(Test-Path -LiteralPath (Join-Path $payloadRoot 'pocketcoder-server.jar'))){throw 'Download the verified desktop artifact first'}
@@ -42,13 +42,15 @@ if(!(Test-Path -LiteralPath $runtime)){
     if($LASTEXITCODE -ne 0){throw 'Runtime image creation failed'}
 }
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-& $compiler /nologo /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll ("/out:"+(Join-Path $payloadRoot 'PocketCoder-PC.exe')) (Join-Path $PSScriptRoot 'PocketCoderPC.cs')
+& $compiler /nologo /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll ("/out:"+(Join-Path $payloadRoot 'PocketCoder-PC.exe')) (Join-Path $PSScriptRoot 'PocketCoderPC.cs') (Join-Path $PSScriptRoot 'RemoteViewer.cs')
 if($LASTEXITCODE -ne 0){throw 'PC control window compilation failed'}
+$viewerTest=Start-Process -FilePath (Join-Path $payloadRoot 'PocketCoder-PC.exe') -ArgumentList '--viewer-self-test' -WindowStyle Hidden -Wait -PassThru
+if($viewerTest.ExitCode -ne 0){throw 'PC viewer self-test failed'}
 & $compiler /nologo /target:exe ("/out:"+(Join-Path $payloadRoot 'PocketCoder-Audio.exe')) (Join-Path $PSScriptRoot 'PocketCoderAudio.cs')
 if($LASTEXITCODE -ne 0){throw 'Playback helper compilation failed'}
 & (Join-Path $payloadRoot 'PocketCoder-Audio.exe') --self-test
 if($LASTEXITCODE -ne 0){throw 'Audio conversion self-test failed'}
 & (Join-Path $payloadRoot 'runtime\bin\java.exe') -jar (Join-Path $payloadRoot 'pocketcoder-server.jar') --self-test
 if($LASTEXITCODE -ne 0){throw 'Bundled runtime/server self-test failed'}
-@{version='0.7.3';ffmpegUrl=$url;ffmpegSha256=$expected;ffmpegSource='f1acb0a2666c78d92688f4c3d2803a132f5590f6';runtime=(Get-Content (Join-Path $runtime 'release') -Raw)} | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $payloadRoot 'component-manifest.json')
+@{version='0.8.0';ffmpegUrl=$url;ffmpegSha256=$expected;ffmpegSource='f1acb0a2666c78d92688f4c3d2803a132f5590f6';runtime=(Get-Content (Join-Path $runtime 'release') -Raw)} | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $payloadRoot 'component-manifest.json')
 Write-Output 'Windows payload, audio conversion and bundled runtime verified.'

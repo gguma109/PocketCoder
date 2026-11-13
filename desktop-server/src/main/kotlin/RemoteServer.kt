@@ -73,7 +73,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.7.3")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.8.0")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -103,7 +103,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.7.3","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.8.0","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -218,6 +218,7 @@ fun main(args: Array<String>) {
     server.createContext("/input-stream") { ex ->
         guarded(ex, authorize, "POST") {
             if (!inputSlot.tryAcquire()) { sendError(ex, 409, "Input stream already active"); return@guarded }
+            var streamOwner: String? = null
             try {
                 ex.requestBody.buffered(4096).use { input ->
                     var lastAuth = System.nanoTime()
@@ -228,14 +229,14 @@ fun main(args: Array<String>) {
                             lastAuth = System.nanoTime()
                         }
                         if (line.isNotEmpty()) {
-                            try { val fields = decodeForm(line); val client = fields["client"].orEmpty(); if (lease.allows(deviceKey(ex, client), client.isEmpty())) app.perform(fields) }
+                            try { val fields = decodeForm(line); val client = fields["client"].orEmpty(); if (lease.allows(deviceKey(ex, client), client.isEmpty())) { if (client.isNotEmpty()) streamOwner = deviceKey(ex, client); app.perform(fields) } }
                             catch (_: IllegalArgumentException) { /* Reject invalid event, preserve the stream. */ }
                         }
                     }
                 }
                 send(ex, 200, "application/json", """{"ok":true}""".toByteArray())
             } catch (_: java.io.IOException) {
-            } finally { inputSlot.release() }
+            } finally { streamOwner?.let { lease.release(it) }; inputSlot.release() }
         }
     }
     server.createContext("/stream") { ex ->
@@ -395,6 +396,11 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     /** Buttons this server pressed via "down". Only these are released on control hand-off/disconnect:
      *  a stray right-button-up opens a context menu on Windows even though nothing was pressed. */
     private val pressedButtons = mutableSetOf<Int>()
+    private val pressedKeys = HeldKeys(robot::keyPress, robot::keyRelease)
+    private var absoluteMotion: Pair<Int, Int>? = null
+    private fun flushAbsolute() { absoluteMotion?.let { (x,y) ->
+        robot.mouseMove(bounds.x + ((bounds.width-1)*x/10000.0).roundToInt(), bounds.y + ((bounds.height-1)*y/10000.0).roundToInt())
+    }; absoluteMotion = null }
     @Volatile private var bounds = initialBounds
     @Volatile var selectedDisplay = initialDisplay
         private set
@@ -404,7 +410,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     }
     init {
         motionWorker.scheduleAtFixedRate({
-            try { synchronized(lock) { applyMotion(motion.step()) } } catch (_: Exception) { }
+            try { synchronized(lock) { applyMotion(motion.step()); flushAbsolute() } } catch (_: Exception) { }
         }, 0, 8, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
     private fun applyMotion(delta: Pair<Int, Int>) {
@@ -422,6 +428,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     fun selectDisplay(index: Int) = synchronized(lock) {
         require(index in devices.indices)
         motion.clear()
+        absoluteMotion = null
         bounds = devices[index].defaultConfiguration.bounds
         selectedDisplay = index
         displayRevision++
@@ -476,12 +483,17 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     fun perform(form: Map<String, String>) = synchronized(lock) {
         // Ignore late events from the previously selected monitor after a switch.
         form["screen"]?.let { if (it.toIntOrNull() != selectedDisplay) return@synchronized }
-        if (form["type"] != "move") applyMotion(motion.step(flush = true))
+        if (form["type"] !in listOf("move", "pos")) { applyMotion(motion.step(flush = true)); flushAbsolute() }
         when (form["type"] ?: "") {
             "move" -> {
                 val dx = bounded(form, "dx", -2500, 2500)
                 val dy = bounded(form, "dy", -2500, 2500)
                 motion.offer(dx, dy)
+            }
+            "pos" -> { absoluteMotion = bounded(form, "x", 0, 10000) to bounded(form, "y", 0, 10000) }
+            "keydown", "keyup" -> {
+                val vk = bounded(form, "vk", 0, 255)
+                if (form["type"] == "keydown") pressedKeys.down(vk) else pressedKeys.up(vk)
             }
             "tap" -> {
                 val x = bounded(form, "x", 0, 10000)
@@ -525,6 +537,8 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
 
     fun releaseButtons() = synchronized(lock) {
         motion.clear()
+        absoluteMotion = null
+        pressedKeys.clear()
         for (button in pressedButtons.toList()) {
             try { robot.mouseRelease(button) } catch (_: Exception) { }
         }
@@ -551,6 +565,9 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
 private inline fun Graphics2D.useGraphics(block: (Graphics2D) -> Unit) = try { block(this) } finally { dispose() }
 
 private fun selfTest() {
+    windowsInputSelfTest()
+    check(decodeForm("type=keydown&vk=13")["vk"] == "13")
+    check(decodeForm("type=pos&x=10000&y=0")["type"] == "pos")
     VideoEncoder.selfTest()
     tailscaleAuthSelfTest()
     check(decodeForm("type=text&value=%ED%95%9C%EA%B8%80+OK")["value"] == "한글 OK")
