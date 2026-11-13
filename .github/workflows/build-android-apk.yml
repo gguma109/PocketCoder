@@ -150,8 +150,26 @@ jobs:
           if (!$testRoot.StartsWith($PWD.Path + [IO.Path]::DirectorySeparatorChar)) { throw 'Unsafe install test path' }
           $version = (Get-Content updates.json -Raw | ConvertFrom-Json).serverVersion
           $setup = Join-Path $output "PocketCoder-Setup-$version.exe"
+          # Verify the existing public release can be upgraded in place, not only a clean install.
+          $previousTag = 'v0.7.3'
+          $previousBase = "https://github.com/gguma109/PocketCoder/releases/download/$previousTag"
+          $previousManifest = Invoke-RestMethod "$previousBase/pocketcoder-update.json"
+          $previousSetup = Join-Path $env:RUNNER_TEMP $previousManifest.installer.name
+          Invoke-WebRequest "$previousBase/$($previousManifest.installer.name)" -OutFile $previousSetup
+          if ((Get-FileHash $previousSetup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $previousManifest.installer.sha256) { throw 'Previous installer checksum mismatch' }
+          $previous = Start-Process -FilePath $previousSetup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=',('/DIR="' + $testRoot + '"')) -WindowStyle Hidden -Wait -PassThru
+          if ($previous.ExitCode -ne 0) { throw 'Previous release installation failed' }
+          $settings = Join-Path $env:LOCALAPPDATA 'PocketCoder\viewer.json'
+          New-Item -ItemType Directory -Force (Split-Path $settings) | Out-Null
+          Set-Content -LiteralPath $settings -Value '{"client":"123456781234123412341234567890ab","upgradeProbe":true}'
+          $settingsHash = (Get-FileHash $settings -Algorithm SHA256).Hash
           $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=',('/DIR="' + $testRoot + '"')) -WindowStyle Hidden -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw 'Silent installation test failed' }
+          if ((Get-FileHash $settings -Algorithm SHA256).Hash -ne $settingsHash) { throw 'Upgrade lost viewer settings' }
+          if (!(Test-Path (Join-Path $testRoot 'bin\ffplay.exe'))) { throw 'Viewer decoder missing from installer' }
+          $viewer = Start-Process -FilePath (Join-Path $testRoot 'PocketCoder-PC.exe') -ArgumentList '--viewer-self-test' -WindowStyle Hidden -Wait -PassThru
+          if ($viewer.ExitCode -ne 0) { throw 'Installed viewer verification failed' }
+          Write-Output 'PASS: 0.7.3 in-place upgrade, settings preserved, installed viewer transport' 
           $originalPath = $env:PATH
           try {
             $env:PATH = "$env:WINDIR\System32;$env:WINDIR\System32\WindowsPowerShell\v1.0"
