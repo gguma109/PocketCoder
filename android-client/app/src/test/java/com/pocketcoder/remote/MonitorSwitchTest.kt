@@ -16,6 +16,7 @@ class MonitorSwitchTest {
     @Test fun switchingKeepsTheSessionAndDoesNotRepeatTheLoginHandshake() {
         val server = ServerSocket(0)
         val healthCount = AtomicInteger()
+        val logins = AtomicInteger()
         val switches = AtomicInteger()
         val selected = AtomicInteger(-1)
         val thread = Thread({
@@ -45,7 +46,7 @@ class MonitorSwitchTest {
                 }
             } catch (_: java.net.SocketException) { }
         }).apply { isDaemon = true; start() }
-        val client = RemoteClient({ _, _ -> }, {}, onDisplays = { _, index -> selected.set(index) })
+        val client = RemoteClient({ _, _ -> }, {}, onLoginConnected = { logins.incrementAndGet() }, onDisplays = { _, index -> selected.set(index) })
         fun awaitSelection(index: Int) {
             val deadline = System.nanoTime() + 3_000_000_000L
             while (selected.get() != index && System.nanoTime() < deadline) {
@@ -59,7 +60,7 @@ class MonitorSwitchTest {
             client.selectDisplay(1); awaitSelection(1)
             client.selectDisplay(0); awaitSelection(0)
             assertEquals(2, switches.get())
-            assertEquals("Monitor changes must not repeat PC authentication and reconnect the session", 1, healthCount.get())
+            assertEquals("Monitor changes must not repeat PC authentication and reconnect the session", 1, logins.get())
         } finally { client.shutdown(); server.close(); thread.join(1000) }
     }
 }

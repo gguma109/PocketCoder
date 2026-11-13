@@ -73,7 +73,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.6.5")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.7.0")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -81,16 +81,29 @@ fun main(args: Array<String>) {
     val requestedVideoFps = option(args, "video-fps", "120").toIntOrNull()?.takeIf { it == 30 || it == 60 || it == 120 }
         ?: error("video-fps must be 30, 60 or 120")
     val videoEncoder = VideoEncoder.detect(requestedVideoFps)
-    val videoProcess = AtomicReference<Process?>()
+    val videoHub = videoEncoder?.let { VideoHub(it) }
+    val audioHub = AudioHub()
+    val lease = ControlLease(releaseButtons = { app.releaseButtons() })
+    val leaseTimer = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "pocketcoder-control-expiry").apply { isDaemon = true } }
+    leaseTimer.scheduleAtFixedRate({ lease.state("") }, 1, 1, java.util.concurrent.TimeUnit.SECONDS)
+    val gson = com.google.gson.Gson()
+    fun deviceKey(ex: HttpExchange, client: String): String {
+        require(client.matches(Regex("[A-Za-z0-9_-]{0,64}")))
+        return ex.remoteAddress.address.hostAddress + "|" + client
+    }
+    fun clientState(ex: HttpExchange, client: String) = lease.state(deviceKey(ex, client))
+    val instance = java.security.MessageDigest.getInstance("SHA-256").digest(
+        java.io.File(RemoteServerMarker::class.java.protectionDomain.codeSource.location.toURI()).canonicalPath.lowercase(java.util.Locale.ROOT).toByteArray()
+    ).joinToString("") { "%02x".format(it) }.take(16)
     // Apply before the JDK HTTP server reads its configuration: stream small frames immediately.
     System.setProperty("sun.net.httpserver.nodelay", "true")
     val server = HttpServer.create(InetSocketAddress(bind, port), 32)
-    server.executor = Executors.newFixedThreadPool(8) { r -> Thread(r, "pocketcoder-http").apply { isDaemon = true } }
+    server.executor = Executors.newFixedThreadPool(24) { r -> Thread(r, "pocketcoder-http").apply { isDaemon = true } }
 
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.5","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.7.0","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -99,41 +112,90 @@ fun main(args: Array<String>) {
             send(ex, 200, "image/jpeg", jpeg)
         }
     }
-    // One viewer per desktop. A slow reader never builds an application frame queue.
-    val streamSlot = Semaphore(1)
+    val streamSlot = Semaphore(4)
     server.createContext("/video") { ex ->
         guarded(ex, authorize, "GET") {
-            val available = videoEncoder ?: run { sendError(ex, 404, "H.264 encoder unavailable"); return@guarded }
-            val requested = decodeForm(ex.requestURI.rawQuery.orEmpty())["fps"]?.toIntOrNull() ?: 60
-            val encoder = available.forFps(requested.coerceIn(30, 120))
-            if (!streamSlot.tryAcquire()) { sendError(ex, 409, "A screen stream is already active"); return@guarded }
-            var process: Process? = null
+            val hub = videoHub ?: run { sendError(ex, 404, "H.264 encoder unavailable"); return@guarded }
+            val query = decodeForm(ex.requestURI.rawQuery.orEmpty())
+            val profile = try { VideoProfile((query["fps"]?.toIntOrNull() ?: 60).coerceIn(30, 120), query["quality"] ?: "native", (query["mbps"]?.toIntOrNull() ?: 40).coerceIn(5, 80)) }
+                catch (_: IllegalArgumentException) { sendError(ex, 400, "Invalid video profile"); return@guarded }
+            if (!streamSlot.tryAcquire()) { sendError(ex, 409, "Maximum four viewers"); return@guarded }
             try {
-                val capture = app.currentBounds()
-                val startedProcess = encoder.start(capture)
-                process = startedProcess
-                videoProcess.set(startedProcess)
-                ex.responseHeaders.set("Content-Type", "application/x-pocketcoder-avc")
-                ex.sendResponseHeaders(200, 0)
-                DataOutputStream(ex.responseBody).use { output ->
-                    writeVideoHeader(output, encoder.dimensions(capture))
-                    val units = AccessUnitReader(startedProcess.inputStream.buffered(65536))
-                    var lastAuth = System.nanoTime()
-                    while (!Thread.currentThread().isInterrupted) {
-                        if (System.nanoTime() - lastAuth > 1_000_000_000L) {
-                            if (!authorize(ex)) break
-                            lastAuth = System.nanoTime()
+                hub.subscribe(app.currentBounds(), profile).use { subscription ->
+                    ex.responseHeaders.set("Content-Type", "application/x-pocketcoder-avc")
+                    ex.sendResponseHeaders(200, 0)
+                    DataOutputStream(ex.responseBody).use { output ->
+                        writeVideoHeader(output, subscription.header)
+                        var lastAuth = System.nanoTime()
+                        while (!Thread.currentThread().isInterrupted) {
+                            if (System.nanoTime() - lastAuth > 1_000_000_000L) {
+                                if (!authorize(ex)) break
+                                lastAuth = System.nanoTime()
+                            }
+                            val packet = subscription.next() ?: break
+                            writeVideoPacket(output, packet.bytes, packet.timeUs)
                         }
-                        val unit = units.next() ?: break
-                        writeVideoPacket(output, unit, System.nanoTime() / 1000)
                     }
                 }
-            } catch (_: java.io.IOException) {
-            } finally {
-                process?.destroyForcibly()
-                videoProcess.compareAndSet(process, null)
-                streamSlot.release()
+            } catch (_: java.io.IOException) { }
+            finally { streamSlot.release() }
+        }
+    }
+    server.createContext("/control") { ex ->
+        guarded(ex, authorize, "POST") {
+            val body = ex.requestBody.use { it.readNBytes(2049) }
+            if (body.size > 2048) { sendError(ex, 413, "Control request too large"); return@guarded }
+            val fields = decodeForm(body.toString(Charsets.UTF_8))
+            val client = fields["client"].orEmpty()
+            if (client.isEmpty()) { sendError(ex, 400, "Client ID required"); return@guarded }
+            val key = deviceKey(ex, client)
+            val state = when (fields["action"]) {
+                "join" -> lease.join(key, fields["label"] ?: "기기")
+                "claim" -> lease.claim(key, fields["label"] ?: "기기")
+                "release" -> lease.release(key)
+                "heartbeat" -> lease.heartbeat(key)
+                else -> { sendError(ex, 400, "Invalid control action"); return@guarded }
             }
+            send(ex, 200, "application/json", gson.toJson(state).toByteArray(Charsets.UTF_8))
+        }
+    }
+    server.createContext("/status") { ex ->
+        guarded(ex, authorize, "GET") {
+            val query = decodeForm(ex.requestURI.rawQuery.orEmpty())
+            val state = lease.heartbeat(deviceKey(ex, query["client"].orEmpty()))
+            val result = mapOf("display" to app.selectedDisplay, "displayRevision" to app.displayRevision,
+                "viewers" to (videoHub?.viewers() ?: 0), "control" to state, "audio" to audioHub.available)
+            send(ex, 200, "application/json", gson.toJson(result).toByteArray(Charsets.UTF_8))
+        }
+    }
+    server.createContext("/connect-qr") { ex ->
+        guarded(ex, authorize, "GET") {
+            if (!isTailscaleAddress(bind)) { sendError(ex, 400, "QR requires Tailscale mode"); return@guarded }
+            val matrix = com.google.zxing.qrcode.QRCodeWriter().encode("pocketcoder://connect?host=$bind&port=$port&v=1", com.google.zxing.BarcodeFormat.QR_CODE, 256, 256)
+            val bytes = ByteArrayOutputStream()
+            com.google.zxing.client.j2se.MatrixToImageWriter.writeToStream(matrix, "PNG", bytes)
+            send(ex, 200, "image/png", bytes.toByteArray())
+        }
+    }
+    server.createContext("/audio") { ex ->
+        guarded(ex, authorize, "GET") {
+            if (!audioHub.available) { sendError(ex, 404, "Install the Windows playback module"); return@guarded }
+            try {
+                audioHub.subscribe().use { subscription ->
+                    val header = subscription.header()
+                    ex.responseHeaders.set("Content-Type", "application/x-pocketcoder-pcm")
+                    ex.sendResponseHeaders(200, 0)
+                    DataOutputStream(ex.responseBody).use { output ->
+                        writeAudioHeader(output, header)
+                        var lastAuth = System.nanoTime()
+                        while (!Thread.currentThread().isInterrupted) {
+                            if (System.nanoTime() - lastAuth > 1_000_000_000L) { if (!authorize(ex)) break; lastAuth = System.nanoTime() }
+                            val packet = subscription.next() ?: break
+                            output.writeInt(packet.size); output.write(packet); output.flush()
+                        }
+                    }
+                }
+            } catch (_: java.io.IOException) { }
         }
     }
     server.createContext("/display") { ex ->
@@ -141,10 +203,13 @@ fun main(args: Array<String>) {
             val bytes = ex.requestBody.use { it.readNBytes(1025) }
             if (bytes.size > 1024) { sendError(ex, 413, "Display request too large"); return@guarded }
             try {
-                val index = decodeForm(bytes.toString(Charsets.UTF_8))["index"]?.toIntOrNull()
+                val fields = decodeForm(bytes.toString(Charsets.UTF_8))
+                val client = fields["client"].orEmpty()
+                if (!lease.allows(deviceKey(ex, client), client.isEmpty())) { sendError(ex, 409, "Control is owned by another device"); return@guarded }
+                val index = fields["index"]?.toIntOrNull()
                     ?: throw IllegalArgumentException("Missing display index")
                 app.selectDisplay(index)
-                videoProcess.getAndSet(null)?.destroyForcibly()
+                videoHub?.reset()
                 send(ex, 200, "application/json", app.inputReceipt())
             } catch (_: IllegalArgumentException) { sendError(ex, 400, "Invalid display index") }
         }
@@ -163,7 +228,7 @@ fun main(args: Array<String>) {
                             lastAuth = System.nanoTime()
                         }
                         if (line.isNotEmpty()) {
-                            try { app.perform(decodeForm(line)) }
+                            try { val fields = decodeForm(line); val client = fields["client"].orEmpty(); if (lease.allows(deviceKey(ex, client), client.isEmpty())) app.perform(fields) }
                             catch (_: IllegalArgumentException) { /* Reject invalid event, preserve the stream. */ }
                         }
                     }
@@ -201,6 +266,8 @@ fun main(args: Array<String>) {
             if (body.size > 32768) { sendError(ex, 413, "Request too large"); return@guarded }
             try {
                 val form = decodeForm(body.toString(StandardCharsets.UTF_8))
+                val client = form["client"].orEmpty()
+                if (!lease.allows(deviceKey(ex, client), client.isEmpty())) { sendError(ex, 409, "Control is owned by another device"); return@guarded }
                 app.perform(form)
                 send(ex, 200, "application/json", app.inputReceipt())
             } catch (bad: IllegalArgumentException) {
@@ -208,7 +275,7 @@ fun main(args: Array<String>) {
             }
         }
     }
-    Runtime.getRuntime().addShutdownHook(Thread { videoProcess.getAndSet(null)?.destroyForcibly(); server.stop(0) })
+    Runtime.getRuntime().addShutdownHook(Thread { videoHub?.close(); audioHub.close(); leaseTimer.shutdownNow(); app.releaseButtons(); server.stop(0) })
     server.start()
     println("\n=============================================")
     println(" POCKET CODER - PC server")
@@ -453,6 +520,12 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
         }
     }
 
+    fun releaseButtons() = synchronized(lock) {
+        motion.clear()
+        for (button in listOf(InputEvent.BUTTON1_DOWN_MASK, InputEvent.BUTTON2_DOWN_MASK, InputEvent.BUTTON3_DOWN_MASK)) {
+            try { robot.mouseRelease(button) } catch (_: Exception) { }
+        }
+    }
     private fun click(button: Int) { robot.mousePress(button); robot.mouseRelease(button) }
 
     private fun pasteUnicode(text: String) {
@@ -600,3 +673,5 @@ private fun protocolSelfTest(encoded: String, expected: String) {
         } finally { stream.disconnect() }
     } finally { server.stop(0) }
 }
+
+private object RemoteServerMarker

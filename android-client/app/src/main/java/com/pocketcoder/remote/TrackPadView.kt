@@ -16,8 +16,15 @@ class TrackPadView(
     context: Context,
     private val onMove: (Int, Int) -> Unit,
     private val onClick: (String) -> Unit,
-    private val onWheel: (Int) -> Unit
+    private val onWheel: (Int) -> Unit,
+    private val onButton: (Boolean) -> Unit = {}
 ) : View(context) {
+    var sensitivity = 2.1f
+    var acceleration = false
+    var dragMode = false
+    private var dragging = false
+    private var previousTime = 0L
+    fun cancelDrag() { if (dragging) { dragging = false; onButton(false) } }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var lastX = 0f
     private var lastY = 0f
@@ -54,6 +61,8 @@ class TrackPadView(
                 startX = e.x; startY = e.y
                 timeDown = SystemClock.uptimeMillis()
                 moved = false; dual = false; wheelAccum = 0f
+                previousTime = e.eventTime
+                if (dragMode) { dragging = true; onButton(true) }
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> { dual = true; lastY = e.y; return true }
@@ -66,17 +75,23 @@ class TrackPadView(
                     lastY = e.y; lastX = e.x
                 } else if (!dual) {
                     if (hypot((e.x - startX).toDouble(), (e.y - startY).toDouble()) > 12) moved = true
-                    val dx = ((e.x - lastX) * 2.1).roundToInt().coerceIn(-200, 200)
-                    val dy = ((e.y - lastY) * 2.1).roundToInt().coerceIn(-200, 200)
+                    val elapsed = (e.eventTime - previousTime).coerceAtLeast(1)
+                    val speed = hypot((e.x - lastX).toDouble(), (e.y - lastY).toDouble()) / resources.displayMetrics.density / elapsed
+                    val gain = sensitivity.coerceIn(.5f, 4f) * if (acceleration) (1 + (speed * .15).coerceIn(0.0, 1.5)) else 1.0
+                    val dx = ((e.x - lastX) * gain).roundToInt().coerceIn(-200, 200)
+                    val dy = ((e.y - lastY) * gain).roundToInt().coerceIn(-200, 200)
                     if (hypot((e.x - startX).toDouble(), (e.y - startY).toDouble()) > 12) moved = true
                     if (dx != 0 || dy != 0) onMove(dx, dy)
                     lastX = e.x; lastY = e.y
+                    previousTime = e.eventTime
                 }
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 parent?.requestDisallowInterceptTouchEvent(false)
-                if (!moved && !dual && abs(e.x - startX) < 15 && abs(e.y - startY) < 15) {
+                val wasDragging = dragging
+                cancelDrag()
+                if (!wasDragging && !moved && !dual && abs(e.x - startX) < 15 && abs(e.y - startY) < 15) {
                     // Each tap sends one click; the desktop detects a double tap as two clicks.
                     onClick(if (SystemClock.uptimeMillis() - timeDown > 510) "right" else "left")
                     performClick()
@@ -85,6 +100,7 @@ class TrackPadView(
             }
             MotionEvent.ACTION_CANCEL -> {
                 parent?.requestDisallowInterceptTouchEvent(false)
+                cancelDrag()
                 moved = true
                 return true
             }

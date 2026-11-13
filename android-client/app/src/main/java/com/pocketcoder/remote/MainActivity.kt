@@ -43,6 +43,13 @@ class MainActivity : Activity() {
     private var mouseExpanded = true
     private lateinit var clearDraftButton: TextView
     private val compactLandscape get() = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    private lateinit var trackpad: TrackPadView
+    private lateinit var dragButton: TextView
+    private lateinit var controlButton: TextView
+    private lateinit var metricsDetail: TextView
+    private var controlling = true
+    private var controllerLabel = ""
+    private val prefs get() = getSharedPreferences("pocketcoder", MODE_PRIVATE)
     private var connected = false
     private val modifiers = linkedSetOf<String>()
     private val modifierButtons = mutableMapOf<String, TextView>()
@@ -62,9 +69,21 @@ class MainActivity : Activity() {
             onVideoSize = { w, h -> screen.showVideo(w, h) },
             onDisplays = { count, selected -> updateMonitors(count, selected) },
             displayFps = { (windowManager.defaultDisplay.refreshRate + .5f).toInt().coerceIn(30, 120) },
-            onDisplayChanging = { screen.beginDisplaySwitch() }
+            onDisplayChanging = { screen.beginDisplaySwitch() },
+            profile = { com.pocketcoder.protocol.VideoProfile(prefs.getInt("videoFps", 120), prefs.getString("quality", "native")!!, prefs.getInt("mbps", 40)) },
+            onMetrics = { updateMetrics(it) },
+            onControl = { mine, label ->
+                controlling = mine; controllerLabel = label
+                controlButton.text = if (mine) "조작 중" else "조작권"
+                controlButton.background = round(if (mine) gold else keyBg, 8)
+                controlButton.setTextColor(if (mine) navy else white)
+                if (!mine) { trackpad.cancelDrag(); trackpad.dragMode = false; dragButton.text = "드래그" }
+            },
+            audioEnabled = { prefs.getBoolean("audioEnabled", true) },
+            audioVolume = { prefs.getFloat("audioVolume", .7f) }
         )
         buildLayout()
+        checkForUpdates(false)
         typed.setText(savedInstanceState?.getString("draft", "") ?: "")
         setMouseExpanded(savedInstanceState?.getBoolean("mouseExpanded", true) ?: true)
         val remembered = getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("autoAddress", null)
@@ -107,7 +126,7 @@ class MainActivity : Activity() {
         monitorBar.addView(tile("+", white, keyBg, 36, 34) { screen.zoom += .25f })
         root.addView(monitorBar, LinearLayout.LayoutParams(match, dp(if (compactLandscape) 36 else 40)))
 
-        screen = RemoteScreenView(this) { x, y -> send("tap", "x" to "$x", "y" to "$y") }.apply { tag = "remoteScreen" }
+        screen = RemoteScreenView(this) { x, y -> send("tap", "x" to "$x", "y" to "$y") }.apply { tag = "remoteScreen"; onPresentedFrame = { client.framePresented() } }
         val controls = LinearLayout(this).apply {
             tag = "controlDeck"; orientation = LinearLayout.VERTICAL
             background = round(panel, 14); setPadding(dp(6), dp(6), dp(6), dp(4))
@@ -116,6 +135,18 @@ class MainActivity : Activity() {
         mouseHeader.addView(text("마우스", 11f, muted), LinearLayout.LayoutParams(0, dp(28), 1f))
         mouseToggleButton = tile("접기", white, keyBg, 56, 28) { toggleMouse() }
         mouseToggleButton.tag = "mouseToggle"
+        dragButton = tile("드래그", white, keyBg, 64, 28) {
+            if (!controlling) { Toast.makeText(this, "먼저 조작권을 가져오세요", Toast.LENGTH_SHORT).show() }
+            else {
+                trackpad.cancelDrag(); trackpad.dragMode = !trackpad.dragMode
+                dragButton.text = if (trackpad.dragMode) "드래그 ON" else "드래그"
+                dragButton.background = round(if (trackpad.dragMode) gold else keyBg, 8)
+                dragButton.setTextColor(if (trackpad.dragMode) navy else white)
+            }
+        }
+        mouseHeader.addView(dragButton, LinearLayout.LayoutParams(dp(64), dp(28)).apply { rightMargin = dp(4) })
+        controlButton = tile("조작권", white, keyBg, 64, 28) { client.claimControl() }
+        mouseHeader.addView(controlButton, LinearLayout.LayoutParams(dp(64), dp(28)).apply { rightMargin = dp(4) })
         mouseHeader.addView(mouseToggleButton)
         controls.addView(mouseHeader, LinearLayout.LayoutParams(match, dp(32)))
         val shortcuts = row()
@@ -141,11 +172,13 @@ class MainActivity : Activity() {
         mousePane = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         mousePane.addView(text("탭으로 클릭 · 길게 눌러 우클릭 · 두 손가락 스크롤", 10f, muted), bottomMargin(5))
         val padRow = row()
-        padRow.addView(TrackPadView(this,
+        trackpad = TrackPadView(this,
             onMove = { dx, dy -> send("move", "dx" to "$dx", "dy" to "$dy") },
             onClick = { button -> send(if (button == "double") "double" else "click", "button" to if (button == "double") "left" else button) },
-            onWheel = { send("wheel", "amount" to "$it") }
-        ), LinearLayout.LayoutParams(0, dp(88), 1f))
+            onWheel = { send("wheel", "amount" to "$it") },
+            onButton = { down -> send(if (down) "down" else "up", "button" to "left") }
+        ).apply { sensitivity = prefs.getFloat("sensitivity", 2.1f); acceleration = prefs.getBoolean("acceleration", false) }
+        padRow.addView(trackpad, LinearLayout.LayoutParams(0, dp(88), 1f))
         val mouseButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         listOf("좌클릭", "우클릭").forEachIndexed { index, label ->
             mouseButtons.addView(tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 68, 42) {
@@ -194,6 +227,12 @@ class MainActivity : Activity() {
         address = entry("PC Tailscale IP:포트", false)
         address.setText(getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("address", ""))
         config.addView(address, bottomMargin(8))
+        config.addView(tile("PC QR 스캔으로 연결", navy, gold, -1, 40) {
+            com.google.zxing.integration.android.IntentIntegrator(this)
+                .setDesiredBarcodeFormats(com.google.zxing.integration.android.IntentIntegrator.QR_CODE)
+                .setPrompt("PC 제어 창의 연결 QR을 비춰주세요")
+                .setBeepEnabled(false).setOrientationLocked(false).initiateScan()
+        }, bottomMargin(8))
         secret = entry("PC 서버에 표시된 인증 토큰", true).apply {
             visibility = View.GONE; isSaveEnabled = false
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -206,10 +245,117 @@ class MainActivity : Activity() {
         config.addView(secret, bottomMargin(8))
         connectButton = tile("PC 연결", navy, gold, -1, 44) { toggleConnection() }
         config.addView(connectButton)
+        addRemoteSettings()
         settingsOverlay.addView(ScrollView(this).apply { addView(config) }, FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) })
         outer.addView(settingsOverlay, FrameLayout.LayoutParams(match, match))
         setMouseExpanded(true)
         outer.requestFocus()
+    }
+
+    private fun updateMetrics(metrics: LiveMetrics) {
+        if (!connected) return
+        val input = if (controlling) metrics.inputState else "보기 전용"
+        status.text = "${if (controlling) "●" else "○"} ${metrics.fps.toInt()} FPS · 왕복 ${metrics.rttMs}ms · $input"
+        metricsDetail.text = "표시 ${"%.1f".format(metrics.fps)} FPS · 수신 ${"%.1f".format(metrics.mbps)}Mbps\n" +
+            "네트워크 왕복 ${metrics.rttMs}ms · 입력 응답 ${metrics.inputMs}ms · 앱 내 디코드 ${metrics.decodeMs}ms\n" +
+            "동시 시청 ${metrics.viewers}대 · 소리 ${metrics.audioState}\n" +
+            if (controlling) "이 기기가 조작 중" else "보기 전용 · 조작 중인 기기: $controllerLabel"
+    }
+    private fun addRemoteSettings() {
+        config.addView(text("기기별 영상 · 입력 · 소리", 14f, white, true), bottomMargin(6))
+        fun choice(label: String, labels: List<String>, selected: Int, apply: (Int) -> Unit) {
+            val line = row().apply { gravity = Gravity.CENTER_VERTICAL }
+            line.addView(text(label, 12f, muted), LinearLayout.LayoutParams(dp(92), dp(40)))
+            val spinner = Spinner(this)
+            spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+            spinner.setSelection(selected.coerceIn(labels.indices), false)
+            var initial = true
+            spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    (view as? TextView)?.setTextColor(white)
+                    if (initial) { initial = false; return }
+                    apply(position)
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) { }
+            }
+            line.addView(spinner, LinearLayout.LayoutParams(0, dp(40), 1f)); config.addView(line)
+        }
+        val qualities = listOf("native", "balanced", "data")
+        choice("화질", listOf("원본 · 최고 선명도", "균형 · 최대 1920", "데이터 절약 · 최대 1280"), qualities.indexOf(prefs.getString("quality", "native"))) {
+            prefs.edit().putString("quality", qualities[it]).apply(); client.refreshVideoProfile()
+        }
+        val fps = listOf(120, 60, 30)
+        choice("목표 FPS", listOf("자동 · 최대 120", "60 FPS", "30 FPS"), fps.indexOf(prefs.getInt("videoFps", 120))) {
+            prefs.edit().putInt("videoFps", fps[it]).apply(); client.refreshVideoProfile()
+        }
+        val bandwidth = listOf(5, 15, 40, 80)
+        choice("전송 상한", bandwidth.map { "$it Mbps" }, bandwidth.indexOf(prefs.getInt("mbps", 40))) {
+            prefs.edit().putInt("mbps", bandwidth[it]).apply(); client.refreshVideoProfile()
+        }
+        val sensitivityLabel = text("마우스 감도: ${prefs.getFloat("sensitivity", 2.1f)}", 12f, muted)
+        config.addView(sensitivityLabel)
+        config.addView(SeekBar(this).apply {
+            max = 35; progress = ((prefs.getFloat("sensitivity", 2.1f) - .5f) * 10).toInt()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) {
+                    if (fromUser) { val gain = .5f + value / 10f; trackpad.sensitivity = gain; prefs.edit().putFloat("sensitivity", gain).apply(); sensitivityLabel.text = "마우스 감도: ${"%.1f".format(gain)}" }
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) { }
+                override fun onStopTrackingTouch(bar: SeekBar?) { }
+            })
+        }, LinearLayout.LayoutParams(match, dp(36)))
+        config.addView(CheckBox(this).apply {
+            text = "마우스 가속 사용"; setTextColor(white); isChecked = prefs.getBoolean("acceleration", false)
+            setOnCheckedChangeListener { _, on -> trackpad.acceleration = on; prefs.edit().putBoolean("acceleration", on).apply() }
+        })
+        config.addView(CheckBox(this).apply {
+            text = "PC 사운드 듣기 (마이크 수음 없음)"; setTextColor(white); isChecked = prefs.getBoolean("audioEnabled", true)
+            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("audioEnabled", on).apply(); client.refreshAudio() }
+        })
+        config.addView(text("PC 사운드 음량", 12f, muted))
+        config.addView(SeekBar(this).apply {
+            max = 100; progress = (prefs.getFloat("audioVolume", .7f) * 100).toInt()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) { if (fromUser) { prefs.edit().putFloat("audioVolume", value / 100f).apply(); client.refreshAudio() } }
+                override fun onStartTrackingTouch(bar: SeekBar?) { }
+                override fun onStopTrackingTouch(bar: SeekBar?) { }
+            })
+        }, LinearLayout.LayoutParams(match, dp(36)))
+        metricsDetail = text("연결하면 실제 FPS · 왕복 지연 · 입력 상태가 표시됩니다", 11f, muted)
+        config.addView(metricsDetail, bottomMargin(8))
+        config.addView(tile("조작권 가져오기", white, keyBg, -1, 40) { client.claimControl() }, bottomMargin(6))
+        config.addView(tile("앱 ${BuildConfig.VERSION_NAME} · 업데이트 확인", white, keyBg, -1, 40) { checkForUpdates(true) })
+    }
+    private fun checkForUpdates(manual: Boolean) {
+        val previous = prefs.getLong("updateChecked", 0)
+        if (!manual && System.currentTimeMillis() - previous < 86400000) return
+        prefs.edit().putLong("updateChecked", System.currentTimeMillis()).apply()
+        Thread({
+            try {
+                val update = UpdateChecker.check(BuildConfig.VERSION_CODE)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (update != null) android.app.AlertDialog.Builder(this).setTitle("PocketCoder ${update.version} 업데이트")
+                        .setMessage("새 버전이 있습니다. GitHub에서 APK를 내려받아 설치하세요.")
+                        .setPositiveButton("다운로드") { _, _ -> startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(update.url))) }
+                        .setNegativeButton("나중에", null).show()
+                    else if (manual) Toast.makeText(this, "현재 최신 버전입니다", Toast.LENGTH_SHORT).show()
+                }
+            } catch (_: Exception) { if (manual) runOnUiThread { Toast.makeText(this, "업데이트 확인 실패 · 인터넷 연결을 확인하세요", Toast.LENGTH_SHORT).show() } }
+        }, "pocketcoder-update").apply { isDaemon = true; start() }
+    }
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        val result = com.google.zxing.integration.android.IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (result != null) {
+            if (result.contents != null) try {
+                val host = com.pocketcoder.protocol.parseConnectionQr(result.contents)
+                address.setText(host); prefs.edit().putString("address", host).apply()
+                client.connect(host)
+            } catch (_: Exception) { Toast.makeText(this, "PocketCoder PC 연결 QR이 아닙니다", Toast.LENGTH_LONG).show() }
+            return
+        }
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun setMouseExpanded(expanded: Boolean) {
@@ -360,6 +506,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        trackpad.cancelDrag()
         client.pause()
         super.onStop()
     }

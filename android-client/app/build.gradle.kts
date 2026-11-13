@@ -11,10 +11,29 @@ android {
         applicationId = "com.pocketcoder.remote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.6.5"
+        versionCode = 20
+        versionName = "0.7.0"
     }
 
+    buildFeatures { buildConfig = true }
+    signingConfigs {
+        create("distribution") {
+            val path = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (!path.isNullOrBlank()) {
+                storeFile = file(path)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = "pocketcoder"
+                keyPassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                storeType = "PKCS12"
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("distribution")
+            isMinifyEnabled = false
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -25,6 +44,7 @@ android {
 }
 
 dependencies {
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
 }

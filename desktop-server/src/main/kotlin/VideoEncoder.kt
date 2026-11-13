@@ -5,13 +5,14 @@ import java.util.concurrent.TimeUnit
 
 /** Fixed FFmpeg screen-encoder commands only. No shell and no remotely supplied arguments. */
 internal class VideoEncoder(private val executable: String, val codec: String, requestedFps: Int = 60,
-    private val outputs: Map<Rectangle, DxgiOutput> = emptyMap()) {
+    private val outputs: Map<Rectangle, DxgiOutput> = emptyMap(), private val profile: VideoProfile = VideoProfile(requestedFps)) {
     val fps = if (codec == "h264_nvenc" && outputs.isNotEmpty()) requestedFps else 30
-    fun forFps(requested: Int) = VideoEncoder(executable, codec, minOf(fps, requested), outputs)
+    fun forFps(requested: Int) = VideoEncoder(executable, codec, minOf(fps, requested), outputs, profile.copy(fps = minOf(fps, requested)))
+    fun forProfile(requested: VideoProfile) = VideoEncoder(executable, codec, minOf(fps, requested.fps), outputs, requested.copy(fps = minOf(fps, requested.fps)))
     val capture = if (outputs.isNotEmpty()) "dxgi" else "gdi"
     fun dimensions(area: Rectangle): VideoHeader {
         require(area.width in 2..8192 && area.height in 2..8192) { "Unsupported display dimensions" }
-        val ratio = 1.0 // Preserve desktop pixels; do not downscale text.
+        val ratio = minOf(1.0, profile.maxEdge.toDouble() / maxOf(area.width, area.height))
         return VideoHeader(maxOf(2, (area.width * ratio).toInt() / 2 * 2), maxOf(2, (area.height * ratio).toInt() / 2 * 2), fps)
     }
     fun start(area: Rectangle): Process {
@@ -37,16 +38,16 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             command += listOf("-f", "gdigrab", "-framerate", "$fps", "-draw_mouse", "1", "-offset_x", "${area.x}", "-offset_y", "${area.y}",
                 "-video_size", "${area.width}x${area.height}", "-i", "desktop", "-vf", "scale=${size.width}:${size.height}", "-pix_fmt", "yuv420p")
         }
-        command += listOf("-an") + encodingOptions(codec, fps)
+        command += listOf("-an") + encodingOptions(codec, fps, profile)
         command += listOf("-fps_mode", "passthrough", "-bsf:v", "h264_metadata=aud=insert", "-flush_packets", "1", "-f", "h264", "pipe:1")
         return command
     }
     companion object {
-        private fun encodingOptions(codec: String, fps: Int): List<String> =
+        private fun encodingOptions(codec: String, fps: Int, profile: VideoProfile = VideoProfile(fps)): List<String> =
             listOf("-c:v", codec) + if (codec == "h264_nvenc") {
-                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "12", "-rc-lookahead", "0", "-delay", "0", "-b:v", "40000k", "-maxrate", "80000k", "-bufsize", "3000k", "-g", "$fps", "-bf", "0")
+                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "${profile.cq}", "-rc-lookahead", "0", "-delay", "0", "-b:v", "${profile.mbps * 650}k", "-maxrate", "${profile.mbps * 1000}k", "-bufsize", "${profile.mbps * 50}k", "-g", "$fps", "-bf", "0")
             } else {
-                listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "12", "-maxrate", "80000k", "-bufsize", "3000k", "-g", "30", "-bf", "0")
+                listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "${profile.cq}", "-maxrate", "${profile.mbps * 1000}k", "-bufsize", "${profile.mbps * 50}k", "-g", "30", "-bf", "0")
             }
         fun detect(requestedFps: Int = 60): VideoEncoder? {
             if (!System.getProperty("os.name").startsWith("Windows", true)) return null
@@ -81,7 +82,7 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             check(flat.contains("output_idx=0:framerate=60") && !flat.contains("hwdownload"))
             val rotated = encoder.command(portrait).joinToString(" ")
             check(rotated.contains("width=1920:height=1080") && rotated.contains("transpose=cclock"))
-            check(flat.contains("-cq 12") && flat.contains("-maxrate 80000k"))
+            check(flat.contains("-cq 12") && flat.contains("-maxrate 40000k"))
             check(encoder.dimensions(Rectangle(0, 0, 3840, 2160)) == VideoHeader(3840, 2160, 60))
             check(VideoEncoder("ffmpeg", "libx264").fps == 30)
         }

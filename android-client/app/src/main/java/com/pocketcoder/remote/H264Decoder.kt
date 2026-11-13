@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /** Hardware decoding straight to a Surface; no JPEG/Bitmap allocation or playback prebuffer. */
-internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boolean, onSize: (Int, Int) -> Unit) {
+internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boolean, onSize: (Int, Int) -> Unit, onPacket: (Int) -> Unit = {}, onDecoded: (Long) -> Unit = {}) {
     val reader = VideoReader(input)
     val first = reader.next() ?: throw IOException("Empty H.264 stream")
     val nals = nalUnits(first.bytes)
@@ -31,6 +31,7 @@ internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boo
     val draining = AtomicBoolean(true)
     val error = AtomicReference<Exception?>()
     var outputThread: Thread? = null
+    val received = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     try {
         decoder.configure(format, surface, null, 0)
         decoder.start()
@@ -40,14 +41,17 @@ internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boo
             try {
                 while (draining.get() && running()) {
                     var latest = decoder.dequeueOutputBuffer(info, 10000)
+                    var latestPts = info.presentationTimeUs
                     if (latest < 0) continue
                     // If rendering fell behind, discard old decoded frames and render the latest.
                     for (i in 0 until 7) {
                         val next = decoder.dequeueOutputBuffer(info, 0)
                         if (next < 0) break
                         decoder.releaseOutputBuffer(latest, false)
-                        latest = next
+                        received.remove(latestPts)
+                        latest = next; latestPts = info.presentationTimeUs
                     }
+                    received.remove(latestPts)?.let { onDecoded((System.nanoTime() - it) / 1_000_000) }
                     decoder.releaseOutputBuffer(latest, true)
                     if (firstFrame) { firstFrame = false; onSize(reader.header.width, reader.header.height) }
                 }
@@ -57,6 +61,8 @@ internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boo
         var number = 0L
         while (running() && surface.isValid) {
             val frame = packet ?: break
+            val receivedAt = System.nanoTime()
+            onPacket(frame.bytes.size)
             error.get()?.let { throw IOException("Video decoder failed", it) }
             var index = decoder.dequeueInputBuffer(10000)
             while (index < 0 && running()) {
@@ -68,7 +74,10 @@ internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boo
             buffer.clear()
             if (buffer.remaining() < frame.bytes.size) throw IOException("Encoded frame too large")
             buffer.put(frame.bytes)
-            decoder.queueInputBuffer(index, 0, frame.bytes.size, number++ * 1_000_000L / reader.header.fps, 0)
+            val pts = number++ * 1_000_000L / reader.header.fps
+            if (received.size > 256) received.clear()
+            received[pts] = receivedAt
+            decoder.queueInputBuffer(index, 0, frame.bytes.size, pts, 0)
             packet = reader.next()
         }
         if (running()) throw IOException("Video stream ended")

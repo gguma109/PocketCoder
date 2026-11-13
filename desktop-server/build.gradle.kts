@@ -1,6 +1,10 @@
 plugins { kotlin("jvm") version "2.0.21" }
 repositories { mavenCentral() }
-dependencies { implementation("com.google.code.gson:gson:2.15.0") }
+dependencies {
+    implementation("com.google.code.gson:gson:2.15.0")
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.zxing:javase:3.5.3")
+}
 kotlin { jvmToolchain(17) }
 kotlin.sourceSets.main { kotlin.srcDir("../shared/src/main/kotlin") }
 tasks.register<Jar>("serverJar") {

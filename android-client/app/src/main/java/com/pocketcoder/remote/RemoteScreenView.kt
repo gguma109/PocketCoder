@@ -10,6 +10,7 @@ import kotlin.math.min
 class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) : FrameLayout(context), TextureView.SurfaceTextureListener {
     @Volatile var videoSurface: Surface? = null
         private set
+    var onPresentedFrame: () -> Unit = {}
     private var videoWidth = 0
     private var videoHeight = 0
     private var videoMode = false
@@ -54,6 +55,7 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
         bitmapView.frame = bitmap
         updateGeometry()
         bitmapView.invalidate()
+        onPresentedFrame()
     }
     fun showVideo(width: Int, height: Int) {
         texture.alpha = 1f
@@ -108,7 +110,7 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
     override fun performClick(): Boolean { super.performClick(); return true }
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) { videoSurface = Surface(surface); updateGeometry() }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) { updateGeometry() }
-    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) { }
+    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) { if (videoMode) onPresentedFrame() }
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { videoSurface?.release(); videoSurface = null; return true }
 
     private inner class BitmapView(context: Context) : View(context) {

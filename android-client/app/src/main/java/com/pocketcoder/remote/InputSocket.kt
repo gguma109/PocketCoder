@@ -8,11 +8,12 @@ import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Keep input independent of a long-lived server lease. Pipeline small requests, read every reply. */
-internal class InputSocket(base: String, private val token: String, private val onDisplay: (Int, Long) -> Unit = { _, _ -> }) : Closeable {
+internal class InputSocket(base: String, private val token: String, private val onAck: (Long) -> Unit = {}, private val onDisplay: (Int, Long) -> Unit = { _, _ -> }) : Closeable {
     private val socket = Socket()
     private val output: java.io.OutputStream
     private val authority: String
     private val pending = AtomicInteger()
+    private val sentAt = java.util.concurrent.ConcurrentLinkedQueue<Long>()
     @Volatile private var failure: Exception? = null
     val isHealthy: Boolean get() = failure == null && !socket.isClosed
     init {
@@ -35,6 +36,7 @@ internal class InputSocket(base: String, private val token: String, private val 
         val auth = if (token.isEmpty()) "" else "Authorization: Bearer $token\r\n"
         val header = ("POST /input HTTP/1.1\r\nHost: $authority\r\n" + auth +
             "Content-Type: application/x-www-form-urlencoded; charset=utf-8\r\nContent-Length: ${encoded.size}\r\nConnection: keep-alive\r\n\r\n").toByteArray(Charsets.US_ASCII)
+        sentAt.offer(System.nanoTime())
         output.write(header + encoded); output.flush()
     }
     private fun readReplies() {
@@ -63,6 +65,7 @@ internal class InputSocket(base: String, private val token: String, private val 
                 val display = Regex("\"display\"\\s*:\\s*(\\d+)").find(receipt)?.groupValues?.get(1)?.toIntOrNull()
                 val revision = Regex("\"displayRevision\"\\s*:\\s*(\\d+)").find(receipt)?.groupValues?.get(1)?.toLongOrNull()
                 if (display != null && revision != null) onDisplay(display, revision)
+                sentAt.poll()?.let { onAck((System.nanoTime() - it) / 1_000_000) }
                 pending.decrementAndGet()
             }
         } catch (e: Exception) { failure = e; try { socket.close() } catch (_: Exception) { } }
