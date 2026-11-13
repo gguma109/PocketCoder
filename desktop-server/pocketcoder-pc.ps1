@@ -18,6 +18,8 @@ if ($SelfTest) {
     exit 0
 }
 function Find-Java {
+    $bundled = Join-Path $serverRoot "runtime\bin\java.exe"
+    if (Test-Path -LiteralPath $bundled -PathType Leaf) { return $bundled }
     $command = Get-Command java.exe -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
     $candidates = @(
@@ -53,14 +55,14 @@ $ip = $null
 if (Test-Path -LiteralPath $tailscale) {
     try { $ip = ((Invoke-Quiet $tailscale 'ip -4').Trim() -split '\r?\n')[0]; if ($ip -notmatch '^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') { $ip = $null } } catch { }
 }
-if ($CheckOnly) {
-    [pscustomobject]@{Java17=$javaReady;FFmpeg=[bool]$ffmpeg;TailscaleConnected=[bool]$ip;Address=$ip;JarPresent=(Test-Path -LiteralPath $serverJar)} | ConvertTo-Json -Compress
-    exit 0
-}
 function Get-OwnedServer {
     @(Get-CimInstance Win32_Process -Filter "Name='java.exe' OR Name='javaw.exe'" -ErrorAction SilentlyContinue | Where-Object {
         Test-ServerCommand $_.CommandLine $serverJar
     })
+}
+if ($CheckOnly) {
+    [pscustomobject]@{Java17=$javaReady;FFmpeg=[bool]$ffmpeg;TailscaleConnected=[bool]$ip;Address=$ip;JarPresent=(Test-Path -LiteralPath $serverJar);OwnedServer=((Get-OwnedServer).Count -gt 0)} | ConvertTo-Json -Compress
+    exit 0
 }
 if ($Action) {
     try {

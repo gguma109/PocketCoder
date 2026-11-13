@@ -47,7 +47,7 @@ class LoginUiTest {
             val token = views.filterIsInstance<EditText>().single { it.hint.toString().contains("인증 토큰") }
             assertEquals(View.GONE, token.visibility)
             assertFalse(token.isSaveEnabled)
-            val legacy = views.filterIsInstance<CheckBox>().single()
+            val legacy = views.filterIsInstance<CheckBox>().single { it.text.toString().startsWith("고급:") }
             assertFalse(legacy.isChecked)
             legacy.isChecked = true
             token.setText("temporary-legacy-secret")

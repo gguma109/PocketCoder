@@ -21,7 +21,9 @@ internal class AudioPlayer(private val state: (String) -> Unit) {
                 try {
                     val socket = VideoConnection(base, "/audio", token)
                     activeConnection = socket
-                    connection.set(socket)
+                    synchronized(this@AudioPlayer) {
+                        if (running && generation.get() == ticket) connection.set(socket)
+                    }
                     if (!running || generation.get() != ticket) { socket.close(); break }
                     socket.use {
                         val reader = AudioReader(it.body().buffered(65536))
@@ -31,7 +33,10 @@ internal class AudioPlayer(private val state: (String) -> Unit) {
                             .setAudioFormat(AudioFormat.Builder().setSampleRate(reader.header.rate).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                             .setBufferSizeInBytes(maxOf(size, reader.header.rate * 4 / 10)).setTransferMode(AudioTrack.MODE_STREAM)
                             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY).build()
-                        player.set(track)
+                        synchronized(this@AudioPlayer) {
+                            if (running && generation.get() == ticket) player.set(track)
+                        }
+                        if (!running || generation.get() != ticket) { track.release(); break }
                         try {
                             track.setVolume(volume.coerceIn(0f, 1f)); track.play(); state("재생 중")
                             while (running && generation.get() == ticket) {

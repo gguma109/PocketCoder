@@ -46,15 +46,17 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
         private fun encodingOptions(codec: String, fps: Int, profile: VideoProfile = VideoProfile(fps)): List<String> =
             listOf("-c:v", codec) + if (codec == "h264_nvenc") {
                 listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "${profile.cq}", "-rc-lookahead", "0", "-delay", "0", "-b:v", "${profile.mbps * 650}k", "-maxrate", "${profile.mbps * 1000}k", "-bufsize", "${profile.mbps * 50}k", "-g", "$fps", "-bf", "0")
-            } else {
+            } else if (codec == "libx264") {
                 listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "${profile.cq}", "-maxrate", "${profile.mbps * 1000}k", "-bufsize", "${profile.mbps * 50}k", "-g", "30", "-bf", "0")
+            } else {
+                listOf("-b:v", "${profile.mbps * 650}k", "-g", "$fps", "-bf", "0")
             }
         fun detect(requestedFps: Int = 60): VideoEncoder? {
             if (!System.getProperty("os.name").startsWith("Windows", true)) return null
             val roots = listOf(File("ffmpeg.exe"), File("bin/ffmpeg.exe")) +
                 (System.getenv("PATH") ?: "").split(File.pathSeparator).map { File(it.trim('"'), "ffmpeg.exe") }
             val executable = roots.firstOrNull { it.isFile }?.absolutePath ?: return null
-            for (codec in listOf("h264_nvenc", "libx264")) {
+            for (codec in listOf("h264_nvenc", "libopenh264", "libx264", "h264_mf")) {
                 val command = listOf(executable, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=1280x720:rate=30", "-frames:v", "2") +
                     encodingOptions(codec, requestedFps) + listOf("-f", "null", "-")
                 val probe = ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start()

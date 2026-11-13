@@ -65,7 +65,7 @@ class TrackPadView(
                 if (dragMode) { dragging = true; onButton(true) }
                 return true
             }
-            MotionEvent.ACTION_POINTER_DOWN -> { dual = true; lastY = e.y; return true }
+            MotionEvent.ACTION_POINTER_DOWN -> { cancelDrag(); dual = true; lastY = e.y; return true }
             MotionEvent.ACTION_MOVE -> {
                 if (e.pointerCount >= 2) {
                     dual = true

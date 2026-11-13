@@ -59,7 +59,7 @@ class PocketCoderAudio {
                         else { var raw=new byte[checked((int)frames*channels*bits/8)];Marshal.Copy(buffer,raw,0,raw.Length);pcm=ConvertPcm(raw,(int)frames,channels,bits,floating); }
                     } finally { Check(capture.ReleaseBuffer(frames)); }
                     Int32BE(output,pcm.Length);output.Write(pcm,0,pcm.Length);output.Flush();last=clock.ElapsedMilliseconds;
-                } else if(clock.ElapsedMilliseconds-last>=40) {
+                } else if(clock.ElapsedMilliseconds-last>=20) {
                     byte[] silence=new byte[rate/50*4]; Int32BE(output,silence.Length);output.Write(silence,0,silence.Length);output.Flush();last=clock.ElapsedMilliseconds;
                 } else Thread.Sleep(3);
             }

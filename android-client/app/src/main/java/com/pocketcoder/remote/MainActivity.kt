@@ -327,6 +327,7 @@ class MainActivity : Activity() {
         config.addView(tile("앱 ${BuildConfig.VERSION_NAME} · 업데이트 확인", white, keyBg, -1, 40) { checkForUpdates(true) })
     }
     private fun checkForUpdates(manual: Boolean) {
+        if (!manual && BuildConfig.DEBUG) return
         val previous = prefs.getLong("updateChecked", 0)
         if (!manual && System.currentTimeMillis() - previous < 86400000) return
         prefs.edit().putLong("updateChecked", System.currentTimeMillis()).apply()
@@ -392,12 +393,13 @@ class MainActivity : Activity() {
     }
 
     private fun showState(isOnline: Boolean, message: String) {
+        val wasConnected = connected
         connected = isOnline
         status.text = (if (isOnline) "●  " else "○  ") + message
         status.setTextColor(if (isOnline) gold else muted)
         connectButton.text = if (isOnline) "연결 해제" else "PC 연결"
         headerButton.text = if (isOnline) "설정" else "연결"
-        if (isOnline) settingsOverlay.visibility = View.GONE
+        if (isOnline && !wasConnected) settingsOverlay.visibility = View.GONE
     }
 
     private fun toggleModifier(mod: String) {
