@@ -34,9 +34,9 @@ internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boo
     try {
         decoder.configure(format, surface, null, 0)
         decoder.start()
-        onSize(reader.header.width, reader.header.height)
         outputThread = Thread({
             val info = MediaCodec.BufferInfo()
+            var firstFrame = true
             try {
                 while (draining.get() && running()) {
                     var latest = decoder.dequeueOutputBuffer(info, 10000)
@@ -49,6 +49,7 @@ internal fun decodeH264(input: InputStream, surface: Surface, running: () -> Boo
                         latest = next
                     }
                     decoder.releaseOutputBuffer(latest, true)
+                    if (firstFrame) { firstFrame = false; onSize(reader.header.width, reader.header.height) }
                 }
             } catch (e: Exception) { if (draining.get() && running()) error.set(e) }
         }, "pocketcoder-video-render").also { it.start() }

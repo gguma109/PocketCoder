@@ -141,6 +141,25 @@ class ResponsiveUiTest {
         } finally { controller.pause().stop().destroy() }
     }
 
+    @Test fun monitorChangeClearsTheOldFrameAndMjpegMarginsAreOpaque() {
+        val view = RemoteScreenView(org.robolectric.RuntimeEnvironment.getApplication()) { _, _ -> }
+        measure(view, 360, 600)
+        val texture = view.getChildAt(0)
+        texture.setBackgroundColor(Color.RED) // Stand in for the previous landscape video texture.
+        view.show(Bitmap.createBitmap(1920, 1080, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GREEN) })
+        view.zoom = 3f
+        view.beginDisplaySwitch()
+        assertEquals(1f, view.zoom)
+        var image = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(image))
+        assertEquals(Color.rgb(11, 18, 31), image.getPixel(2, 2))
+        view.show(Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) })
+        image = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(image))
+        assertEquals("Previous monitor must not show through the portrait letterbox", Color.rgb(11, 18, 31), image.getPixel(2, view.height / 2))
+        assertEquals(Color.BLUE, image.getPixel(view.width / 2, view.height / 2))
+    }
+
     @Test fun draggingZoomedVideoPansWithoutClickingAndFitResetsIt() {
         val view = RemoteScreenView(org.robolectric.RuntimeEnvironment.getApplication()) { _, _ -> clicks++ }
         measure(view, 360, 240)

@@ -39,7 +39,16 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
         addView(texture, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(bitmapView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
+    fun beginDisplaySwitch() {
+        texture.alpha = 0f
+        videoMode = false
+        bitmapView.frame = null
+        bitmapView.visibility = View.VISIBLE
+        bitmapView.invalidate()
+        resetZoom()
+    }
     fun show(bitmap: Bitmap) {
+        texture.alpha = 0f
         videoMode = false
         bitmapView.visibility = View.VISIBLE
         bitmapView.frame = bitmap
@@ -47,6 +56,7 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
         bitmapView.invalidate()
     }
     fun showVideo(width: Int, height: Int) {
+        texture.alpha = 1f
         videoMode = true
         videoWidth = width; videoHeight = height
         bitmapView.visibility = View.GONE
@@ -105,6 +115,7 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
         var frame: Bitmap? = null
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         override fun onDraw(canvas: Canvas) {
+            canvas.drawColor(Color.rgb(11, 18, 31))
             val bitmap = frame
             if (bitmap != null) canvas.drawBitmap(bitmap, null, drawRect, paint)
             else {

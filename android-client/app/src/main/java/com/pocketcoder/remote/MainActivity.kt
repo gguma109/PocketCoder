@@ -61,7 +61,8 @@ class MainActivity : Activity() {
             videoSurface = { if (::screen.isInitialized) screen.videoSurface else null },
             onVideoSize = { w, h -> screen.showVideo(w, h) },
             onDisplays = { count, selected -> updateMonitors(count, selected) },
-            displayFps = { windowManager.defaultDisplay.refreshRate.toInt().coerceIn(30, 120) }
+            displayFps = { (windowManager.defaultDisplay.refreshRate + .5f).toInt().coerceIn(30, 120) },
+            onDisplayChanging = { screen.beginDisplaySwitch() }
         )
         buildLayout()
         typed.setText(savedInstanceState?.getString("draft", "") ?: "")

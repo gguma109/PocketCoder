@@ -24,17 +24,23 @@ class RemoteClient(
     private val videoSurface: () -> Surface? = { null },
     private val onVideoSize: (Int, Int) -> Unit = { _, _ -> },
     private val onDisplays: (Int, Int) -> Unit = { _, _ -> },
-    private val displayFps: () -> Int = { 60 }
+    private val displayFps: () -> Int = { 60 },
+    private val onDisplayChanging: () -> Unit = {}
 ) {
     private data class Session(val id: Int, val base: String, val token: String, val input: InputBuffer = InputBuffer()) {
         @Volatile var streamInput = false
+        @Volatile var displayCount = 1
         @Volatile var selectedDisplay = 0
+        @Volatile var switching = false
+        val videoGeneration = AtomicInteger(0)
         val inputConnection = AtomicReference<InputSocket?>()
     }
-    private data class Frame(val session: Int, val bitmap: Bitmap)
+    private data class Frame(val session: Int, val generation: Int, val bitmap: Bitmap)
     private val main = Handler(Looper.getMainLooper())
     private val frameWorker = Executors.newSingleThreadExecutor()
     private val inputWorker = Executors.newSingleThreadExecutor()
+    private val monitorWorker = Executors.newSingleThreadExecutor()
+    private val videoConnection = AtomicReference<VideoConnection?>()
     private val closeWorker = Executors.newSingleThreadExecutor()
     private val epoch = AtomicInteger(0)
     private val frameConnection = AtomicReference<HttpURLConnection?>()
@@ -80,6 +86,7 @@ class RemoteClient(
                     targetFps = minOf(json.optInt("videoFps", 30).coerceIn(1, 120), displayFps().coerceIn(30, 120))
                     val count = json.optInt("displays", 1)
                     val selected = json.optInt("display", 0)
+                    current.displayCount = count
                     current.selectedDisplay = selected
                     main.post { if (isCurrent(current)) onDisplays(count, selected) }
                     json.optString("stream") == "mjpeg"
@@ -88,19 +95,33 @@ class RemoteClient(
                 active = true
                 if (!legacyMode) main.post { if (isCurrent(current)) onLoginConnected(host) }
                 state(current, true, if (h264) "연결됨 · H.264 · 목표 ${targetFps}fps" else if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
+                val supportsH264 = h264
+                var previousGeneration = current.videoGeneration.get()
                 var failures = 0
                 while (isCurrent(current) && active && !Thread.currentThread().isInterrupted) {
+                    if (current.switching) { Thread.sleep(10); continue }
+                    val generation = current.videoGeneration.get()
+                    if (generation != previousGeneration) {
+                        previousGeneration = generation; failures = 0; h264 = supportsH264
+                    }
+                    val videoRunning = { isCurrent(current) && active && !current.switching && current.videoGeneration.get() == generation }
+                    val decodedFrame = java.util.concurrent.atomic.AtomicBoolean(false)
                     try {
                         if (h264) {
-                            val surface = videoSurface()?.takeIf { it.isValid } ?: throw IOException("화면 준비 중")
-                            withFrameConnection(open(current, "/video?fps=$targetFps")) { c ->
-                                if (c.responseCode != 200) throw IOException("영상 요청 실패: ${c.responseCode}")
-                                c.inputStream.buffered(65536).use { input ->
-                                    decodeH264(input, surface, { isCurrent(current) && active }, { w, h ->
-                                        main.post { if (isCurrent(current)) onVideoSize(w, h) }
-                                    })
-                                }
-                            }
+                            val surface = videoSurface()?.takeIf { it.isValid }
+                            if (surface == null) { Thread.sleep(20); continue }
+                            val c = VideoConnection(current.base, "/video?fps=$targetFps", current.token)
+                            videoConnection.set(c)
+                            try {
+                                if (!videoRunning()) continue
+                                decodeH264(c.body().buffered(65536), surface, videoRunning, { w, h ->
+                                    decodedFrame.set(true)
+                                    main.post { if (videoRunning()) {
+                                        onVideoSize(w, h)
+                                        onState(true, "연결됨 · H.264 · 목표 ${targetFps}fps")
+                                    } }
+                                })
+                            } finally { videoConnection.compareAndSet(c, null); c.close() }
                         } else if (streaming) {
                             withFrameConnection(open(current, "/stream")) { c ->
                                 if (c.responseCode != 200) throw IOException("스트림 요청 실패: ${c.responseCode}")
@@ -109,9 +130,9 @@ class RemoteClient(
                                 }
                                 c.inputStream.buffered(32 * 1024).use { input ->
                                     val reader = MjpegReader(input)
-                                    while (isCurrent(current) && active) {
+                                    while (videoRunning()) {
                                         val bytes = reader.nextFrame() ?: throw IOException("화면 스트림 종료")
-                                        deliver(current, decode(bytes))
+                                        deliver(current, decode(bytes), generation)
                                         failures = 0
                                     }
                                 }
@@ -121,13 +142,21 @@ class RemoteClient(
                                 if (c.responseCode != 200) throw IOException("화면 요청 실패: ${c.responseCode}")
                                 decode(c.inputStream.use { it.readBytes() })
                             }
-                            deliver(current, bitmap)
+                            deliver(current, bitmap, generation)
                             failures = 0
                             Thread.sleep(220)
                         }
                     } catch (e: Exception) {
                         if (!isCurrent(current) || e is InterruptedException) break
-                        if (h264 && ++failures >= 3) {
+                        if (!videoRunning()) continue
+                        if (decodedFrame.get()) failures = 0
+                        if (e is VideoBusyException) { Thread.sleep(30); continue }
+                        if (h264 && ++failures >= 3 && targetFps > 60) {
+                            targetFps = 60; failures = 0
+                            state(current, true, "H.264 60fps로 영상 재시도 중")
+                            continue
+                        }
+                        if (h264 && failures >= 3) {
                             h264 = false; failures = 0
                             state(current, true, "MJPEG 호환 모드 · 영상 디코더를 확인하세요")
                         }
@@ -154,9 +183,9 @@ class RemoteClient(
         ?: throw IOException("이미지 디코딩 실패")
 
     // The UI owns at most one pending frame. Replace old pending frames rather than queueing them.
-    private fun deliver(current: Session, bitmap: Bitmap) {
-        if (!isCurrent(current)) { bitmap.recycle(); return }
-        pendingFrame.getAndSet(Frame(current.id, bitmap))?.bitmap?.recycle()
+    private fun deliver(current: Session, bitmap: Bitmap, generation: Int) {
+        if (!isCurrent(current) || current.switching || current.videoGeneration.get() != generation) { bitmap.recycle(); return }
+        pendingFrame.getAndSet(Frame(current.id, generation, bitmap))?.bitmap?.recycle()
         postDelivery()
     }
 
@@ -165,7 +194,7 @@ class RemoteClient(
         main.post {
             val frame = pendingFrame.getAndSet(null)
             if (frame != null) {
-                if (epoch.get() == frame.session) onFrame(frame.bitmap) else frame.bitmap.recycle()
+                if (epoch.get() == frame.session && session?.videoGeneration?.get() == frame.generation && session?.switching == false) onFrame(frame.bitmap) else frame.bitmap.recycle()
             }
             deliveryPosted.set(false)
             if (pendingFrame.get() != null) postDelivery()
@@ -174,7 +203,7 @@ class RemoteClient(
 
     fun send(fields: Map<String, String>) {
         val current = session ?: return
-        if (!active || !isCurrent(current)) return
+        if (!active || !isCurrent(current) || current.switching) return
         if (!current.input.offer(fields + ("screen" to current.selectedDisplay.toString()))) {
             state(current, true, "입력 지연 · 네트워크 상태를 확인하세요")
             return
@@ -222,6 +251,7 @@ class RemoteClient(
         session = null
         previous?.inputConnection?.getAndSet(null)?.close()
         pendingFrame.getAndSet(null)?.bitmap?.recycle()
+        videoConnection.getAndSet(null)?.close()
         val connection = frameConnection.getAndSet(null)
         if (connection != null) closeWorker.execute { connection.disconnect() }
         if (!silent) main.post { if (epoch.get() == id) onState(false, "연결 안 됨") }
@@ -229,9 +259,16 @@ class RemoteClient(
 
     fun selectDisplay(index: Int) {
         val current = session ?: return
-        if (!active) return
-        inputWorker.execute {
-            if (!isCurrent(current)) return@execute
+        if (!active || (index == current.selectedDisplay && !current.switching)) return
+        val generation = current.videoGeneration.incrementAndGet()
+        current.switching = true
+        pendingFrame.getAndSet(null)?.bitmap?.recycle()
+        videoConnection.getAndSet(null)?.close()
+        frameConnection.getAndSet(null)?.let { c -> closeWorker.execute { c.disconnect() } }
+        onDisplayChanging()
+        state(current, true, "모니터 ${index + 1} 전환 중…")
+        monitorWorker.execute {
+            if (!isCurrent(current) || current.videoGeneration.get() != generation) return@execute
             val c = open(current, "/display", "POST")
             try {
                 val bytes = "index=$index".toByteArray(Charsets.UTF_8)
@@ -240,11 +277,15 @@ class RemoteClient(
                 c.outputStream.use { it.write(bytes) }
                 if (c.responseCode != 200) throw IOException("모니터 변경 실패: ${c.responseCode}")
                 c.inputStream.use { it.readBytes() }
-                main.post {
-                    if (isCurrent(current)) connect(current.base.removePrefix("http://"), current.token, current.token.isNotEmpty())
+                if (isCurrent(current) && current.videoGeneration.get() == generation) {
+                    current.selectedDisplay = index
+                    main.post { if (isCurrent(current)) onDisplays(current.displayCount, index) }
                 }
             } catch (e: Exception) { state(current, true, e.message ?: "모니터 변경 실패") }
-            finally { c.disconnect() }
+            finally {
+                c.disconnect()
+                if (current.videoGeneration.get() == generation) current.switching = false
+            }
         }
     }
 
@@ -264,6 +305,7 @@ class RemoteClient(
         disconnect(silent = true)
         frameWorker.shutdownNow()
         inputWorker.shutdownNow()
+        monitorWorker.shutdownNow()
         closeWorker.shutdown()
     }
 
