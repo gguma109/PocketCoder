@@ -343,7 +343,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
         robot.mouseMove((p.x + delta.first).coerceIn(bounds.x, bounds.x + bounds.width - 1),
             (p.y + delta.second).coerceIn(bounds.y, bounds.y + bounds.height - 1))
     }
-    @Volatile var displayRevision = 0L
+    @Volatile var displayRevision = System.currentTimeMillis()
         private set
     fun inputReceipt(): ByteArray = synchronized(lock) {
         """{"ok":true,"display":$selectedDisplay,"displayRevision":$displayRevision}""".toByteArray()
