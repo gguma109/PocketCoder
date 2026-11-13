@@ -84,7 +84,9 @@ jobs:
       - name: Compile native Windows control window
         shell: pwsh
         run: |
-          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /out:windows-pc/PocketCoder-PC.exe desktop-server/PocketCoderPC.cs
+          $sourceFile = Join-Path $PWD 'desktop-server\PocketCoderPC.cs'
+          $outputFile = Join-Path $PWD 'windows-pc\PocketCoder-PC.exe'
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll "/out:$outputFile" $sourceFile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./desktop-server/pocketcoder-pc.ps1 -SelfTest
       - uses: actions/upload-artifact@v4
