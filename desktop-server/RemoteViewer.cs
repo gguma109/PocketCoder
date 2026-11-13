@@ -55,7 +55,7 @@ class RemoteViewer : Form {
         var bytes=ip.GetAddressBytes();if(bytes[0]!=100||bytes[1]<64||bytes[1]>127)throw new Exception("Tailscale 주소(100.64.0.0~100.127.255.255)만 연결합니다.");
         if(parts.Length==2&&(!int.TryParse(parts[1],out port)||port<1||port>65535))throw new Exception("포트가 올바르지 않습니다.");return ip+":"+port;
     }
-    static HttpWebRequest Request(string host,string path,string body){var r=(HttpWebRequest)WebRequest.Create("http://"+host+path);r.Proxy=null;r.AllowAutoRedirect=false;r.Timeout=4000;r.ReadWriteTimeout=8000;r.ServicePoint.ConnectionLimit=16;r.KeepAlive=true;r.ServicePoint.Expect100Continue=false;
+    static HttpWebRequest Request(string host,string path,string body){var r=(HttpWebRequest)WebRequest.Create("http://"+host+path);r.Proxy=null;r.AllowAutoRedirect=false;r.Timeout=4000;r.ReadWriteTimeout=8000;r.ServicePoint.ConnectionLimit=16;r.KeepAlive=true;r.ServicePoint.Expect100Continue=false;r.ServicePoint.UseNagleAlgorithm=false;
         if(body!=null){r.Method="POST";r.ContentType="application/x-www-form-urlencoded";var data=Encoding.UTF8.GetBytes(body);r.ContentLength=data.Length;using(var output=r.GetRequestStream())output.Write(data,0,data.Length);}return r;}
     static Dictionary<string,object> ReadJson(string host,string path,string body){using(var response=Request(host,path,body).GetResponse())using(var input=new StreamReader(response.GetResponseStream()))return new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(input.ReadToEnd());}
     string Fields(string action){return "client="+client+"&action="+action+"&label="+Uri.EscapeDataString(Environment.MachineName);}
