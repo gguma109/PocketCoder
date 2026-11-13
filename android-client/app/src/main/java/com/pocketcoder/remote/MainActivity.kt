@@ -386,6 +386,7 @@ class MainActivity : Activity() {
             if (result.contents != null) try {
                 val host = com.pocketcoder.protocol.parseConnectionQr(result.contents)
                 address.setText(host); prefs.edit().putString("address", host).apply()
+                screen.beginDisplaySwitch()
                 client.connect(host)
             } catch (_: Exception) { Toast.makeText(this, "PocketCoder PC 연결 QR이 아닙니다", Toast.LENGTH_LONG).show() }
             return
@@ -423,6 +424,7 @@ class MainActivity : Activity() {
         val host = address.text.toString()
         getSharedPreferences("pocketcoder", MODE_PRIVATE).edit().putString("address", host.trim()).apply()
         getSharedPreferences("pocketcoder", MODE_PRIVATE).edit().remove("autoAddress").apply()
+        screen.beginDisplaySwitch()
         client.connect(host, secret.text.toString(), legacyMode.isChecked)
     }
 

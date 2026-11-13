@@ -33,6 +33,9 @@ import kotlin.math.roundToInt
 
 /** No arbitrary shell execution. Only authenticated screen capture and bounded GUI input. */
 fun main(args: Array<String>) {
+    // FFmpeg/DXGI use physical desktop pixels. AWT logical HiDPI bounds otherwise crop
+    // the top-left quarter at 200% scaling and also misplace absolute pointer input.
+    if (System.getProperty("os.name").startsWith("Windows", true)) System.setProperty("sun.java2d.uiScale", "1")
     if (args.contains("--self-test")) { selfTest(); return }
     if (args.contains("--help")) {
         println("Usage: java -jar pocketcoder-server.jar [--bind=127.0.0.1] [--port=8765] [--display=0]")
@@ -73,7 +76,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.8.3")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.8.4")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -103,7 +106,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.8.3","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"cursorlessVideo":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.8.4","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"cursorlessVideo":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -566,6 +569,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
 private inline fun Graphics2D.useGraphics(block: (Graphics2D) -> Unit) = try { block(this) } finally { dispose() }
 
 private fun selfTest() {
+    if (System.getProperty("os.name").startsWith("Windows", true)) check(System.getProperty("sun.java2d.uiScale") == "1") { "Capture must use physical pixels before AWT starts" }
     windowsInputSelfTest()
     check(decodeForm("type=keydown&vk=13")["vk"] == "13")
     check(decodeForm("type=pos&x=10000&y=0")["type"] == "pos")

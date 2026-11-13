@@ -13,6 +13,7 @@ if ($SelfTest) {
     if (!(Test-ServerCommand ('java -jar "' + $example + '" --bind=tailscale') $example)) { throw 'Quoted JAR path rejected' }
     if (Test-ServerCommand ('java -jar "' + $example + '.other"') $example) { throw 'Different JAR accepted' }
     if (Test-ServerCommand ('java -Dnote="' + $example + '" -jar other.jar') $example) { throw 'Unrelated process accepted' }
+    if (!(Test-ServerCommand ('java -Dsun.java2d.uiScale=1 -jar "' + $example + '"') $example)) { throw 'DPI option broke owned-process detection' }
     if (Test-ServerCommand 'java -jar C:\Other\pocketcoder-server.jar' $example) { throw 'Other directory accepted' }
     Write-Output 'PC launcher identity checks PASS'
     exit 0
@@ -83,7 +84,7 @@ if ($Action) {
                 $logRoot=Join-Path $env:LOCALAPPDATA 'PocketCoder\logs'
                 [IO.Directory]::CreateDirectory($logRoot) | Out-Null
                 $stamp=[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
-                $p=Start-Process -FilePath $java -ArgumentList @('-jar',('"'+$serverJar+'"'),'--bind=tailscale','--port=8765') -WorkingDirectory $serverRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot "server-$stamp.log") -RedirectStandardError (Join-Path $logRoot "server-$stamp-error.log") -PassThru
+                $p=Start-Process -FilePath $java -ArgumentList @('-Dsun.java2d.uiScale=1','-jar',('"'+$serverJar+'"'),'--bind=tailscale','--port=8765') -WorkingDirectory $serverRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot "server-$stamp.log") -RedirectStandardError (Join-Path $logRoot "server-$stamp-error.log") -PassThru
                 for($attempt=0;$attempt -lt 24;$attempt++) {
                     Start-Sleep -Milliseconds 500
                     if ($p.HasExited) { throw '서버 시작 실패. 로그를 확인하세요. 방금 종료했다면 잠시 뒤 다시 시작하세요.' }
@@ -132,7 +133,7 @@ $start = Button '시작' 20 {
         $logRoot=Join-Path $env:LOCALAPPDATA 'PocketCoder\logs'
         [IO.Directory]::CreateDirectory($logRoot) | Out-Null
         $script:lastErrorLog=Join-Path $logRoot "server-$stamp-error.log"
-        $script:startedProcess=Start-Process -FilePath $java -ArgumentList @('-jar',('"'+$serverJar+'"'),'--bind=tailscale','--port=8765') -WorkingDirectory $serverRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot "server-$stamp.log") -RedirectStandardError $script:lastErrorLog -PassThru
+        $script:startedProcess=Start-Process -FilePath $java -ArgumentList @('-Dsun.java2d.uiScale=1','-jar',('"'+$serverJar+'"'),'--bind=tailscale','--port=8765') -WorkingDirectory $serverRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot "server-$stamp.log") -RedirectStandardError $script:lastErrorLog -PassThru
         $script:startingUntil=[datetime]::Now.AddSeconds(12)
         $status.Text='시작 중…'; $start.Enabled=$false
     } catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message,'PocketCoder') | Out-Null }

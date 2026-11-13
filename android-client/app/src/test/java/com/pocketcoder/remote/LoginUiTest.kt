@@ -38,6 +38,21 @@ class LoginUiTest {
             assertFalse(typed.hasFocus())
         } finally { controller.pause().stop().destroy() }
     }
+    @Test fun manuallyConnectingResetsPreviousPcZoom() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            fun descendants(view: View): List<View> = listOf(view) +
+                if (view is ViewGroup) (0 until view.childCount).flatMap { descendants(view.getChildAt(it)) } else emptyList()
+            val root = controller.get().window.decorView
+            val screen = root.findViewWithTag<RemoteScreenView>("remoteScreen")
+            screen.zoom = 4f
+            // Invalid address avoids network work; a new connection attempt must still reset the viewport.
+            val views = descendants(root)
+            views.filterIsInstance<EditText>().single { it.hint.toString().contains("PC Tailscale") }.setText("")
+            views.filterIsInstance<TextView>().single { it.text.toString() == "PC 연결" }.performClick()
+            assertEquals(1f, screen.zoom, 0f)
+        } finally { controller.pause().stop().destroy() }
+    }
     @Test fun defaultConnectionDoesNotAskForAnAccessToken() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
