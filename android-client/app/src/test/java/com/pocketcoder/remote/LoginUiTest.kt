@@ -15,23 +15,27 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class LoginUiTest {
-    @Test fun koreanKeyboardAndVisibleEraseControlEditTheSendBuffer() {
+    @Test fun nativePhoneInputReplacesCustomKeypadAndCanClearTheDraft() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             fun descendants(view: View): List<View> = listOf(view) +
                 if (view is ViewGroup) (0 until view.childCount).flatMap { descendants(view.getChildAt(it)) } else emptyList()
-            val views = descendants(controller.get().window.decorView)
-            fun button(label: String) = views.filterIsInstance<TextView>().single { it.text.toString() == label }
-            button("키보드").performClick()
-            button("한/영 · 영문").performClick()
-            button("ㅎ").performClick(); button("ㅏ").performClick(); button("ㄴ").performClick()
-            val typed = views.filterIsInstance<EditText>().single { it.hint.toString().contains("Claude") }
-            assertEquals("한", typed.text.toString())
-            button("지우기 ⌫").performClick()
-            assertEquals("하", typed.text.toString())
-            button("입력창 비우기").performClick()
+            val root = controller.get().window.decorView
+            val views = descendants(root)
+            val typed = root.findViewWithTag<EditText>("phoneInput")
+            assertTrue(typed.showSoftInputOnFocus)
+            assertFalse(typed.hasFocus())
+            assertFalse(views.filterIsInstance<TextView>().any { it.text.toString() == "Q" })
+            typed.requestFocus()
+            typed.performClick()
+            assertEquals(View.GONE, root.findViewWithTag<View>("controlScroll").visibility)
+            typed.setText("한글 English\n두 번째 줄")
+            assertEquals("한글 English\n두 번째 줄", typed.text.toString())
+            views.single { it.contentDescription == "입력창 비우기" }.performClick()
             assertEquals("", typed.text.toString())
-            assertTrue(button("Delete").isShown)
+            root.findViewWithTag<View>("mouseToggle").performClick()
+            assertEquals(View.VISIBLE, root.findViewWithTag<View>("controlScroll").visibility)
+            assertFalse(typed.hasFocus())
         } finally { controller.pause().stop().destroy() }
     }
     @Test fun defaultConnectionDoesNotAskForAnAccessToken() {

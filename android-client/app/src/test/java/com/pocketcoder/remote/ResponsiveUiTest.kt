@@ -50,36 +50,30 @@ class ResponsiveUiTest {
         val dir = File("build/ui-previews").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
-    @Test fun s25KeyboardKeepsTheVideoVisibleWhenControlsScroll() {
+    @Test fun nativeInputLeavesVideoVisibleWithReducedKeyboardWindow() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             val decor = controller.get().window.decorView
             measure(decor, 360, 780)
             val screen = decor.findViewWithTag<RemoteScreenView>("remoteScreen")
             seedScreen(screen)
-            button(decor, "키보드").performClick()
-            measure(decor, 360, 780)
-            val before = Rect(); screen.getGlobalVisibleRect(before)
-            assertTrue(screen.height >= 150 * screen.resources.displayMetrics.density)
-            val controls = decor.findViewWithTag<ScrollView>("controlScroll")
-            controls.scrollTo(0, 10000)
-            val after = Rect(); screen.getGlobalVisibleRect(after)
-            assertEquals("Scrolling controls must never move the remote screen", before, after)
-            var parent = screen.parent
-            while (parent is View) { assertFalse("Video must not be inside a ScrollView", parent is ScrollView); parent = parent.parent }
-            val erase = button(decor, "지우기 ⌫")
-            val delete = button(decor, "Delete")
-            assertTrue(erase.height >= 34 * erase.resources.displayMetrics.density)
-            assertTrue(delete.width >= 70 * delete.resources.displayMetrics.density)
-            controls.scrollTo(0, 0)
-            save(decor, "s25-keyboard")
-            button(decor, "한/영 · 영문").performClick()
-            measure(decor, 360, 780)
-            save(decor, "s25-korean")
-            button(decor, "마우스").performClick()
-            measure(decor, 360, 780)
+            val pad = descendants(decor).filterIsInstance<TrackPadView>().single()
+            assertEquals((88 * pad.resources.displayMetrics.density).toInt(), pad.height)
             save(decor, "s25-mouse")
             val originalHeight = screen.height
+            val typed = decor.findViewWithTag<android.widget.EditText>("phoneInput")
+            typed.requestFocus(); typed.performClick()
+            typed.setText("한글과 English를 휴대폰 자판으로 입력")
+            measure(decor, 360, 780)
+            assertTrue(screen.height > originalHeight)
+            save(decor, "s25-input")
+            measure(decor, 360, 470) // Available app window after a phone IME opens.
+            assertTrue(screen.height >= 150 * screen.resources.displayMetrics.density)
+            val inputBounds = Rect(); assertTrue(typed.getGlobalVisibleRect(inputBounds))
+            assertEquals(typed.height, inputBounds.height())
+            var parent = screen.parent
+            while (parent is View) { assertFalse(parent is ScrollView); parent = parent.parent }
+            save(decor, "s25-ime-window")
             button(decor, "전체").performClick()
             measure(decor, 360, 780)
             assertTrue(screen.height > originalHeight)
@@ -92,7 +86,6 @@ class ResponsiveUiTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             val decor = controller.get().window.decorView
-            button(decor, "키보드").performClick()
             measure(decor, 780, 360)
             val screen = decor.findViewWithTag<RemoteScreenView>("remoteScreen")
             val deck = decor.findViewWithTag<View>("controlDeck")
@@ -101,10 +94,17 @@ class ResponsiveUiTest {
             assertTrue(screen.width > deck.width)
             assertEquals(screen.height, deck.height)
             save(decor, "s25-landscape")
+            val typed = decor.findViewWithTag<android.widget.EditText>("phoneInput")
+            typed.requestFocus(); typed.performClick()
+            measure(decor, 780, 220)
+            assertTrue(screen.height > 0)
+            val bounds = Rect(); assertTrue(typed.getGlobalVisibleRect(bounds))
+            assertEquals(typed.height, bounds.height())
+            save(decor, "landscape-ime-window")
             measure(decor, 320, 600)
             assertTrue(screen.height > 0)
             assertTrue(screen.bottom <= deck.top)
-            save(decor, "compact-keyboard")
+            save(decor, "compact-input")
         } finally { controller.pause().stop().destroy() }
     }
     @Test fun draggingZoomedVideoPansWithoutClickingAndFitResetsIt() {

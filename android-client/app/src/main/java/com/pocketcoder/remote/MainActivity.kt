@@ -12,7 +12,6 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
-import com.pocketcoder.protocol.Hangul
 
 /** Kotlin-only Android remote-development console: no WebView, ads, tracking, or analytics. */
 class MainActivity : Activity() {
@@ -33,22 +32,17 @@ class MainActivity : Activity() {
     private lateinit var connectButton: TextView
     private lateinit var headerButton: TextView
     private lateinit var monitorRow: LinearLayout
-    private lateinit var languageButton: TextView
     private lateinit var workspace: RemoteWorkspace
     private lateinit var settingsOverlay: FrameLayout
     private lateinit var fullscreenButton: TextView
     private lateinit var controlScroll: ScrollView
     private lateinit var mousePane: LinearLayout
-    private lateinit var keyboardPane: LinearLayout
-    private lateinit var textPane: LinearLayout
     private lateinit var composer: LinearLayout
     private lateinit var shortcutStrip: HorizontalScrollView
+    private lateinit var mouseToggleButton: TextView
+    private var mouseExpanded = true
     private lateinit var clearDraftButton: TextView
     private val compactLandscape get() = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    private val modeButtons = mutableMapOf<Int, TextView>()
-    private var activeMode = 0
-    private val letterButtons = mutableMapOf<String, TextView>()
-    private var koreanMode = false
     private var connected = false
     private val modifiers = linkedSetOf<String>()
     private val modifierButtons = mutableMapOf<String, TextView>()
@@ -70,8 +64,7 @@ class MainActivity : Activity() {
         )
         buildLayout()
         typed.setText(savedInstanceState?.getString("draft", "") ?: "")
-        if (savedInstanceState?.getBoolean("korean", false) == true) toggleLanguage()
-        selectMode(savedInstanceState?.getInt("mode", 0) ?: 0)
+        setMouseExpanded(savedInstanceState?.getBoolean("mouseExpanded", true) ?: true)
         val remembered = getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("autoAddress", null)
         if (!remembered.isNullOrBlank()) {
             address.setText(remembered)
@@ -80,7 +73,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildLayout() {
-        val outer = FrameLayout(this).apply { tag = "appRoot"; setBackgroundColor(navy); fitsSystemWindows = true }
+        val outer = FrameLayout(this).apply { tag = "appRoot"; setBackgroundColor(navy); fitsSystemWindows = true; isFocusableInTouchMode = true }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), dp(4), dp(10), dp(6))
@@ -117,19 +110,20 @@ class MainActivity : Activity() {
             tag = "controlDeck"; orientation = LinearLayout.VERTICAL
             background = round(panel, 14); setPadding(dp(6), dp(6), dp(6), dp(4))
         }
-        val modes = row()
-        listOf("마우스", "키보드", "텍스트").forEachIndexed { index, label ->
-            val button = tile(label, white, keyBg, -1, 36) { selectMode(index) }
-            modeButtons[index] = button
-            modes.addView(button, LinearLayout.LayoutParams(0, dp(if (compactLandscape) 28 else 36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
-        }
-        controls.addView(modes, LinearLayout.LayoutParams(match, dp(if (compactLandscape) 32 else 38)))
+        val mouseHeader = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        mouseHeader.addView(text("마우스", 11f, muted), LinearLayout.LayoutParams(0, dp(28), 1f))
+        mouseToggleButton = tile("접기", white, keyBg, 56, 28) { toggleMouse() }
+        mouseToggleButton.tag = "mouseToggle"
+        mouseHeader.addView(mouseToggleButton)
+        controls.addView(mouseHeader, LinearLayout.LayoutParams(match, dp(32)))
         val shortcuts = row()
-        listOf("ESC", "TAB", "CTRL", "ALT", "SHIFT", "CMD", "←", "↑", "↓", "→", "PG↑", "PG↓").forEach { label ->
-            val width = if (label in listOf("SHIFT", "CTRL")) 54 else 44
+        listOf("ESC", "TAB", "PC ⌫", "Delete", "ENTER", "Ctrl+C", "Ctrl+V", "Ctrl+X", "Ctrl+A", "Ctrl+Z", "CTRL", "ALT", "SHIFT", "CMD", "←", "↑", "↓", "→", "PG↑", "PG↓").forEach { label ->
+            val width = when { label.startsWith("Ctrl+") -> 66; label in listOf("SHIFT", "CTRL", "PC ⌫", "Delete", "ENTER") -> 56; else -> 44 }
             val button = tile(label, white, keyBg, width, 34) {
-                if (label in listOf("CTRL", "ALT", "SHIFT", "CMD")) toggleModifier(label)
-                else pressKey(when (label) { "←" -> "LEFT"; "↑" -> "UP"; "↓" -> "DOWN"; "→" -> "RIGHT"; "PG↑" -> "PAGEUP"; "PG↓" -> "PAGEDOWN"; else -> label })
+                if (label.startsWith("Ctrl+")) {
+                    client.send(mapOf("type" to "key", "key" to label.substringAfter('+'), "ctrl" to "1"))
+                } else if (label in listOf("CTRL", "ALT", "SHIFT", "CMD")) toggleModifier(label)
+                else pressKey(when (label) { "PC ⌫" -> "BACKSPACE"; "Delete" -> "DELETE"; "←" -> "LEFT"; "↑" -> "UP"; "↓" -> "DOWN"; "→" -> "RIGHT"; "PG↑" -> "PAGEUP"; "PG↓" -> "PAGEDOWN"; else -> label })
             }
             if (label in listOf("CTRL", "ALT", "SHIFT", "CMD")) modifierButtons[label] = button
             shortcuts.addView(button, LinearLayout.LayoutParams(dp(width), dp(34)).apply { rightMargin = dp(4) })
@@ -149,57 +143,34 @@ class MainActivity : Activity() {
             onMove = { dx, dy -> send("move", "dx" to "$dx", "dy" to "$dy") },
             onClick = { button -> send(if (button == "double") "double" else "click", "button" to if (button == "double") "left" else button) },
             onWheel = { send("wheel", "amount" to "$it") }
-        ), LinearLayout.LayoutParams(0, dp(146), 1f))
+        ), LinearLayout.LayoutParams(0, dp(88), 1f))
         val mouseButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        listOf("좌클릭", "우클릭", "스크롤 ↑", "스크롤 ↓").forEachIndexed { index, label ->
-            mouseButtons.addView(tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 68, 34) {
-                when (index) { 0 -> send("click", "button" to "left"); 1 -> send("click", "button" to "right"); 2 -> send("wheel", "amount" to "-3"); else -> send("wheel", "amount" to "3") }
-            }, LinearLayout.LayoutParams(dp(68), dp(34)).apply { bottomMargin = dp(3) })
+        listOf("좌클릭", "우클릭").forEachIndexed { index, label ->
+            mouseButtons.addView(tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 68, 42) {
+                send("click", "button" to if (index == 0) "left" else "right")
+            }, LinearLayout.LayoutParams(dp(68), dp(42)).apply { bottomMargin = if (index == 0) dp(4) else 0 })
         }
-        padRow.addView(mouseButtons, LinearLayout.LayoutParams(dp(68), dp(146)).apply { leftMargin = dp(6) })
+        padRow.addView(mouseButtons, LinearLayout.LayoutParams(dp(68), dp(88)).apply { leftMargin = dp(6) })
         mousePane.addView(padRow)
         panes.addView(mousePane)
-
-        keyboardPane = LinearLayout(this).apply { tag = "keyboardPane"; orientation = LinearLayout.VERTICAL }
-        val keyboardTools = row()
-        languageButton = tile("한/영 · 영문", navy, gold, -1, 36) { toggleLanguage() }
-        val eraseButton = tile("지우기 ⌫", white, keyBg, -1, 36) { erase() }
-        val deleteButton = tile("Delete", white, keyBg, -1, 36) { pressKey("DELETE") }
-        listOf(languageButton, eraseButton, deleteButton).forEach { button ->
-            keyboardTools.addView(button, LinearLayout.LayoutParams(0, dp(if (compactLandscape) 28 else 36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
-        }
-        keyboardPane.addView(keyboardTools, LinearLayout.LayoutParams(match, dp(if (compactLandscape) 32 else 38)))
-        keyboardRow(keyboardPane, "1 2 3 4 5 6 7 8 9 0")
-        keyboardRow(keyboardPane, "Q W E R T Y U I O P")
-        keyboardRow(keyboardPane, "A S D F G H J K L")
-        keyboardRow(keyboardPane, "Z X C V B N M , . /")
-        val last = row()
-        listOf("[" to 1f, "]" to 1f, "SPACE" to 3.8f, "'" to 1f, "⌫" to 1.4f, "↵" to 1.4f).forEach { (label, weight) -> last.addView(key(label), weightedKeyParams(weight)) }
-        keyboardPane.addView(last, bottomMargin(3))
-        panes.addView(keyboardPane)
-
-        textPane = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        textPane.addView(text("긴 명령이나 한글을 작성해 PC에 붙여넣습니다.", 12f, muted), bottomMargin(8))
-        textPane.addView(tile("휴대폰 키보드 열기", white, keyBg, -1, 42) {
-            typed.showSoftInputOnFocus = true; typed.requestFocus()
-            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(typed, InputMethodManager.SHOW_IMPLICIT)
-        })
-        textPane.addView(tile("PC Enter", navy, gold, -1, 38) { pressKey("ENTER") }, LinearLayout.LayoutParams(match, dp(38)).apply { topMargin = dp(8) })
-        panes.addView(textPane)
 
         composer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "composer" }
         val composeRow = row().apply { gravity = Gravity.CENTER_VERTICAL }
         typed = entry("Claude·Codex 명령 또는 한글 입력", false).apply {
             setSingleLine(false); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             maxLines = 3; imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
-            setPadding(dp(10), dp(6), dp(10), dp(6)); showSoftInputOnFocus = false
+            setPadding(dp(10), dp(6), dp(10), dp(6)); showSoftInputOnFocus = true
+            tag = "phoneInput"
+            setOnFocusChangeListener { _, focused -> if (focused) setMouseExpanded(false) }
+            setOnClickListener { setMouseExpanded(false) }
         }
         val composerHeight = if (compactLandscape) 32 else 44
         composeRow.addView(typed, LinearLayout.LayoutParams(0, dp(composerHeight), 1f))
         composeRow.addView(tile("전송", navy, gold, 52, composerHeight) { sendTyped() }, LinearLayout.LayoutParams(dp(52), dp(composerHeight)).apply { leftMargin = dp(5) })
-        composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(composerHeight + 4)))
-        clearDraftButton = tile("입력창 비우기", muted, panel, -1, 28) { typed.text.clear() }
-        composer.addView(clearDraftButton)
+        composeRow.addView(tile("↵", white, keyBg, 36, composerHeight) { pressKey("ENTER") }, LinearLayout.LayoutParams(dp(36), dp(composerHeight)).apply { leftMargin = dp(4) })
+        clearDraftButton = tile("비우기", muted, keyBg, 44, composerHeight) { typed.text.clear() }.apply { contentDescription = "입력창 비우기" }
+        composeRow.addView(clearDraftButton, LinearLayout.LayoutParams(dp(44), dp(composerHeight)).apply { leftMargin = dp(4) })
+        composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(composerHeight + 8)))
         controls.addView(composer)
         workspace = RemoteWorkspace(this, screen, controls).apply { tag = "workspace" }
         root.addView(workspace, LinearLayout.LayoutParams(match, 0, 1f))
@@ -235,28 +206,27 @@ class MainActivity : Activity() {
         config.addView(connectButton)
         settingsOverlay.addView(ScrollView(this).apply { addView(config) }, FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) })
         outer.addView(settingsOverlay, FrameLayout.LayoutParams(match, match))
-        selectMode(activeMode)
+        setMouseExpanded(true)
+        outer.requestFocus()
     }
 
-    private fun selectMode(mode: Int) {
-        activeMode = mode
-        mousePane.visibility = if (mode == 0) View.VISIBLE else View.GONE
-        keyboardPane.visibility = if (mode == 1) View.VISIBLE else View.GONE
-        textPane.visibility = if (mode == 2) View.VISIBLE else View.GONE
-        composer.visibility = if (mode == 0 || (compactLandscape && mode == 1 && !koreanMode)) View.GONE else View.VISIBLE
-        clearDraftButton.visibility = if (compactLandscape && mode == 1) View.GONE else View.VISIBLE
-        shortcutStrip.visibility = if (compactLandscape && mode == 1) View.GONE else View.VISIBLE
-        typed.showSoftInputOnFocus = mode == 2
-        if (mode != 2) {
+    private fun setMouseExpanded(expanded: Boolean) {
+        mouseExpanded = expanded
+        if (!::workspace.isInitialized) return
+        controlScroll.visibility = if (expanded) View.VISIBLE else View.GONE
+        mouseToggleButton.text = if (expanded) "접기" else "펼치기"
+        shortcutStrip.visibility = if (compactLandscape && !expanded) View.GONE else View.VISIBLE
+        workspace.controlHeightDp = if (expanded) 228 else if (compactLandscape) 88 else 132
+    }
+
+    private fun toggleMouse() {
+        val expanded = !mouseExpanded
+        if (expanded) {
             (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
             typed.clearFocus()
+            window.decorView.findViewWithTag<View>("appRoot").requestFocus()
         }
-        modeButtons.forEach { (index, view) ->
-            view.setTextColor(if (index == mode) navy else muted)
-            view.background = round(if (index == mode) gold else keyBg, 9)
-        }
-        workspace.controlHeightDp = when (mode) { 1 -> 420; 2 -> 300; else -> 280 }
-        controlScroll.scrollTo(0, 0)
+        setMouseExpanded(expanded)
     }
 
     private fun toggleExpanded() {
@@ -284,7 +254,6 @@ class MainActivity : Activity() {
 
     private fun toggleModifier(mod: String) {
         if (!modifiers.add(mod)) modifiers.remove(mod)
-        if (koreanMode) letterButtons.forEach { (letter, view) -> view.text = Hangul.key(letter[0], "SHIFT" in modifiers).toString() }
         modifierButtons.forEach { (label, view) ->
             val on = label in modifiers
             view.setTextColor(if (on) navy else white)
@@ -310,52 +279,10 @@ class MainActivity : Activity() {
         if (value.length > 1000) { Toast.makeText(this, "한 번에 1000자까지 전송할 수 있습니다", Toast.LENGTH_SHORT).show(); return }
         send("text", "value" to value)
         typed.text.clear()
-        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
-        typed.clearFocus()
     }
 
     private fun send(type: String, vararg values: Pair<String, String>) =
         client.send(mapOf("type" to type) + values.toMap())
-
-    private fun keyboardRow(parent: LinearLayout, letters: String) {
-        val horizontal = row()
-        letters.split(' ').forEach { label ->
-            val k = key(label)
-            horizontal.addView(k, weightedKeyParams(1f))
-        }
-        parent.addView(horizontal, bottomMargin(if (compactLandscape) 1 else 3))
-    }
-
-    private fun weightedKeyParams(weight: Float) = LinearLayout.LayoutParams(0, dp(if (compactLandscape) 28 else 36), weight).apply {
-        leftMargin = dp(2); rightMargin = dp(2)
-    }
-
-    private fun key(label: String): TextView {
-        val view = text(label, if (label == "SPACE") 11f else 14f, white, true).apply {
-            gravity = Gravity.CENTER
-            background = round(if (label == "↵") Color.rgb(195, 147, 64) else keyBg, 6)
-            setOnClickListener {
-                if (koreanMode && modifiers.none { it in setOf("CTRL", "ALT", "CMD") }) {
-                    when (label) {
-                        "⌫" -> erase()
-                        "↵" -> { sendTyped(); pressKey("ENTER") }
-                        else -> {
-                            val value = if (label == "SPACE") ' ' else if (label.length == 1) Hangul.key(label[0], "SHIFT" in modifiers) ?: label[0] else null
-                            if (value != null) insertHangul(value)
-                        }
-                    }
-                    return@setOnClickListener
-                }
-                val name = when (label) { "↵" -> "ENTER"; "⌫" -> "BACKSPACE"; "SPACE" -> "SPACE"; else -> label }
-                pressKey(name)
-            }
-        }
-        view.setPadding(dp(1), 0, dp(1), 0)
-        view.setSingleLine(true)
-        view.includeFontPadding = false
-        if (label.length == 1 && Hangul.keys.containsKey(label[0])) letterButtons[label] = view
-        return view
-    }
 
     private fun updateMonitors(count: Int, selected: Int) {
         monitorRow.removeAllViews()
@@ -364,36 +291,6 @@ class MainActivity : Activity() {
                 if (index == selected) gold else keyBg, 86, 34) { client.selectDisplay(index) },
                 LinearLayout.LayoutParams(dp(86), dp(34)).apply { rightMargin = dp(4) })
         }
-    }
-
-    private fun toggleLanguage() {
-        koreanMode = !koreanMode
-        languageButton.text = if (koreanMode) "한/영 · 한글" else "한/영 · 영문"
-        letterButtons.forEach { (letter, view) -> view.text = if (koreanMode) Hangul.key(letter[0], "SHIFT" in modifiers).toString() else letter }
-        if (koreanMode) {
-            Toast.makeText(this, "한글은 입력창에서 조합한 뒤 전송하세요", Toast.LENGTH_SHORT).show()
-            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
-        }
-        selectMode(activeMode)
-    }
-
-    private fun insertHangul(value: Char) {
-        val start = minOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(0)
-        val end = maxOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(start)
-        val composed = Hangul.append(typed.text.substring(0, start), value)
-        typed.text.replace(0, end, composed)
-        typed.setSelection(composed.length)
-        if ("SHIFT" in modifiers) toggleModifier("SHIFT")
-    }
-
-    private fun erase() {
-        if (!koreanMode) { pressKey("BACKSPACE"); return }
-        val start = minOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(0)
-        val end = maxOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(start)
-        if (start != end) { typed.text.delete(start, end); return }
-        val composed = Hangul.backspace(typed.text.substring(0, start))
-        typed.text.replace(0, start, composed)
-        typed.setSelection(composed.length)
     }
 
     private fun entry(hint: String, password: Boolean): EditText = EditText(this).apply {
@@ -442,8 +339,7 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("draft", typed.text.toString())
-        outState.putInt("mode", activeMode)
-        outState.putBoolean("korean", koreanMode)
+        outState.putBoolean("mouseExpanded", mouseExpanded)
         super.onSaveInstanceState(outState)
     }
 
