@@ -69,6 +69,8 @@ jobs:
             desktop-server/TAILSCALE_SETUP.md
             desktop-server/PocketCoder-PC.vbs
             desktop-server/pocketcoder-pc.ps1
+          if-no-files-found: error
+          retention-days: 30
   windows-pc:
     needs: apk
     runs-on: windows-latest
@@ -89,7 +91,5 @@ jobs:
         with:
           name: pocketcoder-windows-pc
           path: windows-pc/
-          if-no-files-found: error
-          retention-days: 30
           if-no-files-found: error
           retention-days: 30
