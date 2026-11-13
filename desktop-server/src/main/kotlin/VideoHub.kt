@@ -11,14 +11,14 @@ internal data class HubPacket(val bytes: ByteArray, val timeUs: Long)
 internal class VideoHub(private val encoder: VideoEncoder) : Closeable {
     internal data class Key(val bounds: Rectangle, val profile: VideoProfile)
     private val groups = mutableMapOf<Key, Group>()
-    @Synchronized fun subscribe(area: Rectangle, profile: VideoProfile): Subscription {
+    @Synchronized fun subscribe(area: Rectangle, profile: VideoProfile, live: Boolean = false): Subscription {
         val normalized = profile.copy(fps = minOf(encoder.fps, profile.fps))
         val key = Key(Rectangle(area), normalized)
         val group = groups[key] ?: run {
             require(groups.size < 4) { "Too many active video profiles" }
             Group(key, encoder.forProfile(normalized)).also { groups[key] = it; it.start() }
         }
-        return group.add()
+        return group.add(replay = !live)
     }
     @Synchronized fun viewers(): Int = groups.values.sumOf { it.count() }
     @Synchronized fun reset() { groups.values.toList().forEach { it.stop() }; groups.clear() }
@@ -75,9 +75,9 @@ internal class VideoHub(private val encoder: VideoEncoder) : Closeable {
                 finally { synchronized(this) { subscribers.forEach { it.end() }; gop.clear() }; process?.destroyForcibly(); synchronized(this@VideoHub) { groups.remove(key, this) } }
             }, "pocketcoder-video-hub").apply { isDaemon = true; start() }
         }
-        @Synchronized fun add(): Subscription {
+        @Synchronized fun add(replay: Boolean): Subscription {
             val subscription = Subscription(this, selected.dimensions(key.bounds))
-            gop.forEachIndexed { index, packet -> subscription.offer(packet, index == 0) }
+            if (replay) gop.forEachIndexed { index, packet -> subscription.offer(packet, index == 0) }
             subscribers += subscription
             return subscription
         }

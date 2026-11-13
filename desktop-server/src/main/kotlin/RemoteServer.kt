@@ -73,7 +73,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.8.2")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.8.3")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -103,7 +103,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.8.2","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.8.3","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"cursorlessVideo":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -117,11 +117,11 @@ fun main(args: Array<String>) {
         guarded(ex, authorize, "GET") {
             val hub = videoHub ?: run { sendError(ex, 404, "H.264 encoder unavailable"); return@guarded }
             val query = decodeForm(ex.requestURI.rawQuery.orEmpty())
-            val profile = try { VideoProfile((query["fps"]?.toIntOrNull() ?: 60).coerceIn(30, 120), query["quality"] ?: "native", (query["mbps"]?.toIntOrNull() ?: 40).coerceIn(5, 80)) }
+            val profile = try { VideoProfile((query["fps"]?.toIntOrNull() ?: 60).coerceIn(30, 120), query["quality"] ?: "native", (query["mbps"]?.toIntOrNull() ?: 40).coerceIn(5, 80), drawCursor = query["cursor"] != "0") }
                 catch (_: IllegalArgumentException) { sendError(ex, 400, "Invalid video profile"); return@guarded }
             if (!streamSlot.tryAcquire()) { sendError(ex, 409, "Maximum four viewers"); return@guarded }
             try {
-                hub.subscribe(app.currentBounds(), profile).use { subscription ->
+                hub.subscribe(app.currentBounds(), profile, live = query["live"] == "1").use { subscription ->
                     ex.responseHeaders.set("Content-Type", "application/x-pocketcoder-avc")
                     ex.sendResponseHeaders(200, 0)
                     DataOutputStream(ex.responseBody).use { output ->
@@ -411,7 +411,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     init {
         motionWorker.scheduleAtFixedRate({
             try { synchronized(lock) { applyMotion(motion.step()); flushAbsolute() } } catch (_: Exception) { }
-        }, 0, 8, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }, 0, 4, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
     private fun applyMotion(delta: Pair<Int, Int>) {
         if (delta.first == 0 && delta.second == 0) return

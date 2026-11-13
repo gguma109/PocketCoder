@@ -26,7 +26,7 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             val rotated = output.rotation == 2 || output.rotation == 4
             val width = if (rotated) size.height else size.width
             val height = if (rotated) size.width else size.height
-            val filters = mutableListOf("ddagrab=output_idx=${output.index}:framerate=$fps:draw_mouse=1")
+            val filters = mutableListOf("ddagrab=output_idx=${output.index}:framerate=$fps:draw_mouse=${if (profile.drawCursor) 1 else 0}")
             val needsResize = size.width != area.width || size.height != area.height
             if (needsResize || output.rotation in 2..4) {
                 // Some D3D11 drivers reject scale_d3d11 output textures. Native capture stays entirely on GPU;
@@ -39,7 +39,7 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             filters += "setpts=N/($fps*TB)"
             command += listOf("-filter_complex", filters.joinToString(","))
         } else {
-            command += listOf("-f", "gdigrab", "-framerate", "$fps", "-draw_mouse", "1", "-offset_x", "${area.x}", "-offset_y", "${area.y}",
+            command += listOf("-f", "gdigrab", "-framerate", "$fps", "-draw_mouse", if (profile.drawCursor) "1" else "0", "-offset_x", "${area.x}", "-offset_y", "${area.y}",
                 "-video_size", "${area.width}x${area.height}", "-i", "desktop", "-vf", "scale=${size.width}:${size.height}", "-pix_fmt", "yuv420p")
         }
         command += listOf("-an") + encodingOptions(codec, fps, profile)
@@ -88,9 +88,13 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             check(flat.contains("output_idx=0:framerate=60") && !flat.contains("hwdownload"))
             val rotated = encoder.command(portrait).joinToString(" ")
             check(rotated.contains("format=bgra") && rotated.contains("transpose=cclock"))
+            check(flat.contains("draw_mouse=1"))
+            check(encoder.forProfile(VideoProfile(drawCursor = false)).command(primary).joinToString(" ").contains("draw_mouse=0"))
+            check(encoder.forProfile(VideoProfile(drawCursor = false)).command(portrait).joinToString(" ").contains("draw_mouse=0"))
             check(flat.contains("-cq 12") && flat.contains("-maxrate 40000k"))
             check(encoder.dimensions(Rectangle(0, 0, 3840, 2160)) == VideoHeader(3840, 2160, 60))
             check(VideoEncoder("ffmpeg", "libx264").fps == 30)
+            check(VideoEncoder("ffmpeg", "libx264").forProfile(VideoProfile(drawCursor = false)).command(primary).joinToString(" ").contains("-draw_mouse 0"))
         }
     }
 }
