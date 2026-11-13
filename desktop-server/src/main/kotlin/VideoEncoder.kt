@@ -7,6 +7,7 @@ import java.util.concurrent.TimeUnit
 internal class VideoEncoder(private val executable: String, val codec: String, requestedFps: Int = 60,
     private val outputs: Map<Rectangle, DxgiOutput> = emptyMap()) {
     val fps = if (codec == "h264_nvenc" && outputs.isNotEmpty()) requestedFps else 30
+    fun forFps(requested: Int) = VideoEncoder(executable, codec, minOf(fps, requested), outputs)
     val capture = if (outputs.isNotEmpty()) "dxgi" else "gdi"
     fun dimensions(area: Rectangle): VideoHeader {
         require(area.width in 2..8192 && area.height in 2..8192) { "Unsupported display dimensions" }
@@ -43,9 +44,9 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
     companion object {
         private fun encodingOptions(codec: String, fps: Int): List<String> =
             listOf("-c:v", codec) + if (codec == "h264_nvenc") {
-                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "16", "-rc-lookahead", "0", "-delay", "0", "-b:v", "24000k", "-maxrate", "40000k", "-bufsize", "2000k", "-g", "$fps", "-bf", "0")
+                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "12", "-rc-lookahead", "0", "-delay", "0", "-b:v", "40000k", "-maxrate", "80000k", "-bufsize", "3000k", "-g", "$fps", "-bf", "0")
             } else {
-                listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "16", "-maxrate", "40000k", "-bufsize", "2000k", "-g", "30", "-bf", "0")
+                listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "12", "-maxrate", "80000k", "-bufsize", "3000k", "-g", "30", "-bf", "0")
             }
         fun detect(requestedFps: Int = 60): VideoEncoder? {
             if (!System.getProperty("os.name").startsWith("Windows", true)) return null
@@ -80,7 +81,7 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             check(flat.contains("output_idx=0:framerate=60") && !flat.contains("hwdownload"))
             val rotated = encoder.command(portrait).joinToString(" ")
             check(rotated.contains("width=1920:height=1080") && rotated.contains("transpose=cclock"))
-            check(flat.contains("-cq 16") && flat.contains("-maxrate 40000k"))
+            check(flat.contains("-cq 12") && flat.contains("-maxrate 80000k"))
             check(encoder.dimensions(Rectangle(0, 0, 3840, 2160)) == VideoHeader(3840, 2160, 60))
             check(VideoEncoder("ffmpeg", "libx264").fps == 30)
         }

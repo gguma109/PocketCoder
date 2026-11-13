@@ -23,7 +23,8 @@ class RemoteClient(
     private val onLoginConnected: (String) -> Unit = {},
     private val videoSurface: () -> Surface? = { null },
     private val onVideoSize: (Int, Int) -> Unit = { _, _ -> },
-    private val onDisplays: (Int, Int) -> Unit = { _, _ -> }
+    private val onDisplays: (Int, Int) -> Unit = { _, _ -> },
+    private val displayFps: () -> Int = { 60 }
 ) {
     private data class Session(val id: Int, val base: String, val token: String, val input: InputBuffer = InputBuffer()) {
         @Volatile var streamInput = false
@@ -76,7 +77,7 @@ class RemoteClient(
                     if (!legacyMode && json.optString("auth") != "tailscale") throw IOException("Tailscale 로그인 서버 0.3.0으로 업데이트하세요")
                     current.streamInput = json.optString("input") == "stream"
                     h264 = json.optString("video") == "h264"
-                    targetFps = json.optInt("videoFps", 30).coerceIn(1, 120)
+                    targetFps = minOf(json.optInt("videoFps", 30).coerceIn(1, 120), displayFps().coerceIn(30, 120))
                     val count = json.optInt("displays", 1)
                     val selected = json.optInt("display", 0)
                     current.selectedDisplay = selected
@@ -92,7 +93,7 @@ class RemoteClient(
                     try {
                         if (h264) {
                             val surface = videoSurface()?.takeIf { it.isValid } ?: throw IOException("화면 준비 중")
-                            withFrameConnection(open(current, "/video")) { c ->
+                            withFrameConnection(open(current, "/video?fps=$targetFps")) { c ->
                                 if (c.responseCode != 200) throw IOException("영상 요청 실패: ${c.responseCode}")
                                 c.inputStream.buffered(65536).use { input ->
                                     decodeH264(input, surface, { isCurrent(current) && active }, { w, h ->

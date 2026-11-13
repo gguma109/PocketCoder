@@ -61,7 +61,7 @@ fun main(args: Array<String>) {
     require(display < devices.size) { "Display $display not found. Displays: ${devices.size}" }
     val device = devices[display]
     val area = device.defaultConfiguration.bounds
-    val robot = Robot(device).apply { autoDelay = 1; isAutoWaitForIdle = false }
+    val robot = Robot(device).apply { autoDelay = 0; isAutoWaitForIdle = false }
     val authMode = option(args, "auth", if (isTailscaleAddress(bind)) "tailscale" else "token")
     require(authMode in listOf("tailscale", "token")) { "auth must be tailscale or token" }
     val token = if (authMode == "token") newToken() else null
@@ -73,13 +73,13 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.6.1")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.6.3")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
     val app = DesktopController(robot, area, devices, display)
-    val requestedVideoFps = option(args, "video-fps", "60").toIntOrNull()?.takeIf { it == 30 || it == 60 }
-        ?: error("video-fps must be 30 or 60")
+    val requestedVideoFps = option(args, "video-fps", "120").toIntOrNull()?.takeIf { it == 30 || it == 60 || it == 120 }
+        ?: error("video-fps must be 30, 60 or 120")
     val videoEncoder = VideoEncoder.detect(requestedVideoFps)
     val videoProcess = AtomicReference<Process?>()
     // Apply before the JDK HTTP server reads its configuration: stream small frames immediately.
@@ -90,7 +90,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.1","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.3","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -103,7 +103,9 @@ fun main(args: Array<String>) {
     val streamSlot = Semaphore(1)
     server.createContext("/video") { ex ->
         guarded(ex, authorize, "GET") {
-            val encoder = videoEncoder ?: run { sendError(ex, 404, "H.264 encoder unavailable"); return@guarded }
+            val available = videoEncoder ?: run { sendError(ex, 404, "H.264 encoder unavailable"); return@guarded }
+            val requested = decodeForm(ex.requestURI.rawQuery.orEmpty())["fps"]?.toIntOrNull() ?: 60
+            val encoder = available.forFps(requested.coerceIn(30, 120))
             if (!streamSlot.tryAcquire()) { sendError(ex, 409, "A screen stream is already active"); return@guarded }
             var process: Process? = null
             try {
@@ -326,9 +328,25 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     @Volatile private var bounds = initialBounds
     @Volatile var selectedDisplay = initialDisplay
         private set
+    private val motion = MouseMotion()
+    private val motionWorker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "pocketcoder-mouse").apply { isDaemon = true }
+    }
+    init {
+        motionWorker.scheduleAtFixedRate({
+            try { synchronized(lock) { applyMotion(motion.step()) } } catch (_: Exception) { }
+        }, 0, 8, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+    private fun applyMotion(delta: Pair<Int, Int>) {
+        if (delta.first == 0 && delta.second == 0) return
+        val p = MouseInfo.getPointerInfo().location
+        robot.mouseMove((p.x + delta.first).coerceIn(bounds.x, bounds.x + bounds.width - 1),
+            (p.y + delta.second).coerceIn(bounds.y, bounds.y + bounds.height - 1))
+    }
     fun currentBounds(): Rectangle = Rectangle(bounds)
     fun selectDisplay(index: Int) = synchronized(lock) {
         require(index in devices.indices)
+        motion.clear()
         bounds = devices[index].defaultConfiguration.bounds
         selectedDisplay = index
     }
@@ -382,13 +400,12 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     fun perform(form: Map<String, String>) = synchronized(lock) {
         // Ignore late events from the previously selected monitor after a switch.
         form["screen"]?.let { if (it.toIntOrNull() != selectedDisplay) return@synchronized }
+        if (form["type"] != "move") applyMotion(motion.step(flush = true))
         when (form["type"] ?: "") {
             "move" -> {
                 val dx = bounded(form, "dx", -2500, 2500)
                 val dy = bounded(form, "dy", -2500, 2500)
-                val p = MouseInfo.getPointerInfo().location
-                robot.mouseMove((p.x + dx).coerceIn(bounds.x, bounds.x + bounds.width - 1),
-                    (p.y + dy).coerceIn(bounds.y, bounds.y + bounds.height - 1))
+                motion.offer(dx, dy)
             }
             "tap" -> {
                 val x = bounded(form, "x", 0, 10000)
