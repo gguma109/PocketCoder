@@ -30,6 +30,7 @@ class RemoteClient(
     private data class Session(val id: Int, val base: String, val token: String, val input: InputBuffer = InputBuffer()) {
         @Volatile var streamInput = false
         @Volatile var displayCount = 1
+        @Volatile var displayRevision = -1L
         @Volatile var selectedDisplay = 0
         @Volatile var switching = false
         val videoGeneration = AtomicInteger(0)
@@ -88,6 +89,7 @@ class RemoteClient(
                     val selected = json.optInt("display", 0)
                     current.displayCount = count
                     current.selectedDisplay = selected
+                    current.displayRevision = json.optLong("displayRevision", -1)
                     main.post { if (isCurrent(current)) onDisplays(count, selected) }
                     json.optString("stream") == "mjpeg"
                 }
@@ -220,7 +222,18 @@ class RemoteClient(
                         var c = current.inputConnection.get()
                         if (c == null || !c.isHealthy) {
                             c?.close()
-                            c = InputSocket(current.base, current.token)
+                            c = InputSocket(current.base, current.token) { index, revision ->
+                                synchronized(current) {
+                                    if (isCurrent(current) && !current.switching && revision >= current.displayRevision) {
+                                        current.displayRevision = revision
+                                        val changed = current.selectedDisplay != index
+                                        current.selectedDisplay = index
+                                        if (changed) main.post {
+                                            if (isCurrent(current) && current.displayRevision == revision) onDisplays(current.displayCount, index)
+                                        }
+                                    }
+                                }
+                            }
                             current.inputConnection.set(c)
                         }
                         if (!isCurrent(current)) { current.inputConnection.getAndSet(null)?.close(); break }
@@ -277,9 +290,10 @@ class RemoteClient(
                 c.setFixedLengthStreamingMode(bytes.size)
                 c.outputStream.use { it.write(bytes) }
                 if (c.responseCode != 200) throw IOException("모니터 변경 실패: ${c.responseCode}")
-                c.inputStream.use { it.readBytes() }
+                val receipt = c.inputStream.use { JSONObject(it.bufferedReader().readText()) }
                 if (isCurrent(current) && current.videoGeneration.get() == generation) {
                     current.selectedDisplay = index
+                    current.displayRevision = receipt.optLong("displayRevision", current.displayRevision)
                     main.post { if (isCurrent(current) && current.videoGeneration.get() == generation) onDisplays(current.displayCount, index) }
                 }
             } catch (e: Exception) { state(current, true, e.message ?: "모니터 변경 실패") }

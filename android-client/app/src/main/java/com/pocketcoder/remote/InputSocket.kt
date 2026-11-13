@@ -8,7 +8,7 @@ import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Keep input independent of a long-lived server lease. Pipeline small requests, read every reply. */
-internal class InputSocket(base: String, private val token: String) : Closeable {
+internal class InputSocket(base: String, private val token: String, private val onDisplay: (Int, Long) -> Unit = { _, _ -> }) : Closeable {
     private val socket = Socket()
     private val output: java.io.OutputStream
     private val authority: String
@@ -59,6 +59,10 @@ internal class InputSocket(base: String, private val token: String) : Closeable 
                     if (count < 0) throw EOFException("입력 응답 종료")
                     offset += count
                 }
+                val receipt = body.toString(Charsets.UTF_8)
+                val display = Regex("\"display\"\\s*:\\s*(\\d+)").find(receipt)?.groupValues?.get(1)?.toIntOrNull()
+                val revision = Regex("\"displayRevision\"\\s*:\\s*(\\d+)").find(receipt)?.groupValues?.get(1)?.toLongOrNull()
+                if (display != null && revision != null) onDisplay(display, revision)
                 pending.decrementAndGet()
             }
         } catch (e: Exception) { failure = e; try { socket.close() } catch (_: Exception) { } }

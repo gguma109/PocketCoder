@@ -90,7 +90,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.5","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.5","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -145,7 +145,7 @@ fun main(args: Array<String>) {
                     ?: throw IllegalArgumentException("Missing display index")
                 app.selectDisplay(index)
                 videoProcess.getAndSet(null)?.destroyForcibly()
-                send(ex, 200, "application/json", """{"ok":true,"display":$index}""".toByteArray())
+                send(ex, 200, "application/json", app.inputReceipt())
             } catch (_: IllegalArgumentException) { sendError(ex, 400, "Invalid display index") }
         }
     }
@@ -202,7 +202,7 @@ fun main(args: Array<String>) {
             try {
                 val form = decodeForm(body.toString(StandardCharsets.UTF_8))
                 app.perform(form)
-                send(ex, 200, "application/json", """{"ok":true}""".toByteArray())
+                send(ex, 200, "application/json", app.inputReceipt())
             } catch (bad: IllegalArgumentException) {
                 sendError(ex, 400, bad.message ?: "Bad input")
             }
@@ -343,12 +343,18 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
         robot.mouseMove((p.x + delta.first).coerceIn(bounds.x, bounds.x + bounds.width - 1),
             (p.y + delta.second).coerceIn(bounds.y, bounds.y + bounds.height - 1))
     }
+    @Volatile var displayRevision = 0L
+        private set
+    fun inputReceipt(): ByteArray = synchronized(lock) {
+        """{"ok":true,"display":$selectedDisplay,"displayRevision":$displayRevision}""".toByteArray()
+    }
     fun currentBounds(): Rectangle = Rectangle(bounds)
     fun selectDisplay(index: Int) = synchronized(lock) {
         require(index in devices.indices)
         motion.clear()
         bounds = devices[index].defaultConfiguration.bounds
         selectedDisplay = index
+        displayRevision++
     }
     // Screen capture has its own Robot so capture cannot block mouse/keyboard input.
     private val captureRobot = Robot()
