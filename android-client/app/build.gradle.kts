@@ -11,8 +11,8 @@ android {
         applicationId = "com.pocketcoder.remote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 25
-        versionName = "0.8.1"
+        versionCode = 26
+        versionName = "0.8.2"
     }
 
     buildFeatures { buildConfig = true }

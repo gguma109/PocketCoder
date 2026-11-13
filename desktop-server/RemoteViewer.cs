@@ -14,7 +14,7 @@ using System.Windows.Forms;
 
 // A viewer never starts/stops the local server. Authentication is enforced by the remote server.
 class RemoteViewer : Form {
-    readonly Panel canvas=new Panel(); readonly FlowLayoutPanel bar=new FlowLayoutPanel();
+    readonly Panel canvas=new InputSurface(); readonly FlowLayoutPanel bar=new FlowLayoutPanel();
     readonly Label state=new Label(); readonly Button claim=new Button();
     readonly JavaScriptSerializer json=new JavaScriptSerializer();
     readonly string host,client,root=AppDomain.CurrentDomain.BaseDirectory;
@@ -27,7 +27,7 @@ class RemoteViewer : Form {
     volatile bool stopped,mine,sound=true; bool armed=true; static RemoteViewer current; IntPtr videoWindow; volatile int display,width=1920,height=1080,generation; bool hardware=true;
     volatile string position; long lastMove; int queueSize; bool full=true,polling,joined;
     bool switching; int controlEpoch; HttpWebRequest videoRequest;
-    long revision=-1; Process player,audio; IntPtr keyboardHook,mouseHook; Hook keyboardProc,mouseProc;
+    long revision=-1; Process player,audio; IntPtr keyboardHook,mouseHook; Hook keyboardProc,mouseProc; int mouseObserved,mouseForwarded; int diagnosticTick;
     [DllImport("user32.dll")]static extern bool SetProcessDPIAware();
     public static void EnableDpi(){SetProcessDPIAware();}
     public static void Shutdown(){if(current!=null&&!current.IsDisposed)current.Close();}
@@ -71,9 +71,13 @@ class RemoteViewer : Form {
         int count=Convert.ToInt32(health["displays"]);for(int i=0;i<count;i++){int index=i;Add("모니터 "+(i+1),async delegate{await SwitchDisplay(index);});}
         Add("창 / 전체",delegate{full=!full;ApplyWindow();});Add("소리 켬 / 끔",delegate{sound=!sound;StopProcess(ref audio);if(sound)Task.Run((Action)AudioLoop);});Add("연결 종료",delegate{Close();});
         display=Convert.ToInt32(health["display"]);revision=Convert.ToInt64(health["displayRevision"]);
-        keyboardProc=Keyboard;mouseProc=Mouse;Shown+=async delegate{ApplyWindow();await Control("join");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)AudioLoop);timer.Start();};
+        canvas.MouseMove+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasMove(o,e);};canvas.MouseDown+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasDown(o,e);};canvas.MouseUp+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasUp(o,e);};
+        MouseMove+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasMove(o,e);};MouseDown+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasDown(o,e);};MouseUp+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasUp(o,e);};
+        canvas.MouseWheel+=CanvasWheel;MouseWheel+=CanvasWheel;
+        canvas.MouseCaptureChanged+=delegate{if(!canvas.Capture&&buttons.Count>0)ReleaseHeld();};
+        keyboardProc=Keyboard;mouseProc=ObserveMouse;Shown+=async delegate{ApplyWindow();await Control("claim");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)AudioLoop);timer.Start();};
         resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped)RestartVideo();};
-        timer.Interval=1000;timer.Tick+=async delegate{var pointer=PointToClient(Cursor.Position);bar.Visible=!mine||pointer.Y<bar.Height+FixedDpiLayout.Px(6);await Poll();};
+        timer.Interval=1000;timer.Tick+=async delegate{if(++diagnosticTick%5==0)ViewerLog("mouse observed="+mouseObserved+" forwarded="+mouseForwarded+" active="+ActiveInput+" armed="+armed);var pointer=PointToClient(Cursor.Position);bar.Visible=!mine||pointer.Y<bar.Height+FixedDpiLayout.Px(6);await Poll();};
         Deactivate+=delegate{BeginInvoke((Action)delegate{if(!ViewerForeground)SuspendInput();});};Activated+=delegate{if(mine&&armed)SetControl(true);};
         FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();Unhook();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
     }
@@ -86,7 +90,7 @@ class RemoteViewer : Form {
         if(mine&&!value)SuspendInput();mine=value;
         if(!mine||!armed){state.Text="보기 전용 · 조작 시작을 누르세요";return;}
         if(!ViewerForeground){state.Text="조작권 있음 · 이 창을 클릭하세요";return;}
-        InstallHooks();state.Text=keyboardHook!=IntPtr.Zero&&mouseHook!=IntPtr.Zero?"조작 중 · Ctrl+Alt+Shift+Q 탈출":"입력 준비 실패 · 로그 폴더를 확인하세요";
+        InstallHooks();state.Text=keyboardHook!=IntPtr.Zero?"조작 중 · Ctrl+Alt+Shift+Q 탈출":"입력 준비 실패 · 로그 폴더를 확인하세요";
     }
 
     async Task Poll(){if(polling||stopped||!joined)return;polling=true;int epoch=controlEpoch,pollVideoGeneration=generation;try{var s=await Task.Run(()=>ReadJson(host,"/status?client="+client,null));if(epoch==controlEpoch)SetControl(Convert.ToBoolean(((Dictionary<string,object>)s["control"])["mine"]));
@@ -101,18 +105,23 @@ class RemoteViewer : Form {
         }catch(Exception e){state.Text="모니터 전환 실패: "+e.Message;}finally{switching=false;}
     }
     void Send(string body){if(stopped)return;if(Interlocked.Increment(ref queueSize)>512){Interlocked.Decrement(ref queueSize);BeginInvoke((Action)delegate{SuspendInput();Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});});return;}events.Enqueue("client="+client+"&screen="+display+"&"+body);wake.Set();}
-    static HttpWebRequest InputRequest(string address){var r=Request(address,"/input-stream",null);r.Method="POST";r.SendChunked=true;r.AllowWriteStreamBuffering=false;r.ContentType="application/x-www-form-urlencoded";r.ReadWriteTimeout=5000;return r;}
+    static HttpWebRequest InputRequest(string address){var r=Request(address,"/input-stream",null);r.Method="POST";r.SendChunked=true;r.AllowWriteStreamBuffering=false;r.ContentType="application/x-www-form-urlencoded";r.ReadWriteTimeout=5000;r.Timeout=System.Threading.Timeout.Infinite;return r;}
+    static Stream OpenInput(HttpWebRequest request){
+        // The lifetime of a chunked request is the lifetime of the viewer, not the connect timeout.
+        var pending=Task<Stream>.Factory.FromAsync(request.BeginGetRequestStream,request.EndGetRequestStream,null);
+        if(!pending.Wait(5000)){request.Abort();throw new TimeoutException("Input connection timeout");}return pending.Result;
+    }
     static string Line(Stream input){var b=new StringBuilder();int c;while((c=input.ReadByte())!=-1){if(c==10)return b.ToString().TrimEnd('\r');if(b.Length>32768)throw new IOException("Header too large");b.Append((char)c);}throw new EndOfStreamException();}
     static void InputTransportSelfTest(){
         var firstInput=new ManualResetEventSlim(false);var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
         try{string address="127.0.0.1:"+((IPEndPoint)listener.LocalEndpoint).Port;
             var peer=Task.Run(()=>{using(var c=listener.AcceptTcpClient())using(var input=c.GetStream()){
-                input.ReadTimeout=5000;string first=Line(input);if(!first.StartsWith("POST /input-stream "))throw new Exception("Input path");while(Line(input)!=""){}
+                input.ReadTimeout=10000;string first=Line(input);if(!first.StartsWith("POST /input-stream "))throw new Exception("Input path");while(Line(input)!=""){}
                 var body=new MemoryStream();while(true){int n=Convert.ToInt32(Line(input).Split(';')[0],16);if(n==0){Line(input);break;}var bytes=Bytes(input,n);body.Write(bytes,0,n);firstInput.Set();if(Line(input)!="")throw new Exception("Chunk framing");}
                 var reply=Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");input.Write(reply,0,reply.Length);
                 return Encoding.UTF8.GetString(body.ToArray());
             }});
-            var request=InputRequest(address);using(var output=request.GetRequestStream()){for(int i=0;i<100;i++){var bytes=Encoding.UTF8.GetBytes("client=test&screen=0&type=keydown&vk=255\n");output.Write(bytes,0,bytes.Length);output.Flush();if(i==0&&!firstInput.Wait(2000))throw new Exception("Input buffered until connection closes");}}
+            var request=InputRequest(address);using(var output=OpenInput(request)){for(int i=0;i<100;i++){var bytes=Encoding.UTF8.GetBytes("client=test&screen=0&type=keydown&vk=255\n");output.Write(bytes,0,bytes.Length);output.Flush();if(i==0&&!firstInput.Wait(2000))throw new Exception("Input buffered until connection closes");if(i==0)Thread.Sleep(4500);}}
             using(var response=request.GetResponse()){}if(!peer.Wait(5000)||peer.Result.Split(new[]{'\n'},StringSplitOptions.RemoveEmptyEntries).Length!=100)throw new Exception("Persistent input framing");
         }finally{listener.Stop();}
     }
@@ -120,15 +129,16 @@ class RemoteViewer : Form {
         while(!stopped){HttpWebRequest r=null;
             try{r=InputRequest(host);
                 lock(requestLock){if(stopped)return;streams.Add(r);}
-                using(var output=r.GetRequestStream()){
+                using(var output=OpenInput(r)){
                     ViewerLog("input transport connected");
+                    BeginInvoke((Action)(async delegate{if(armed&&!stopped&&ViewerForeground)await Control("claim");}));
                     while(!stopped){string item;
                         if(!events.TryDequeue(out item)){item=Interlocked.Exchange(ref position,null);if(item==null){wake.WaitOne(8);continue;}}
                         else Interlocked.Decrement(ref queueSize);
                         var bytes=Encoding.UTF8.GetBytes(item+"\n");output.Write(bytes,0,bytes.Length);output.Flush();
                     }
                 }
-            }catch(Exception e){ViewerLog("input transport failed: "+e.GetType().Name+" "+e.Message);if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{armed=false;SuspendInput();mine=false;state.Text="입력 재연결 · 조작 시작을 누르세요";Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});});}
+            }catch(Exception e){ViewerLog("input transport failed: "+e.GetType().Name+" "+e.Message);if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{SuspendInput();mine=false;state.Text="입력 연결 재시도 중…";Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});});}
             finally{if(r!=null)Forget(r);}if(!stopped)Thread.Sleep(300);
         }
     }
@@ -137,22 +147,61 @@ class RemoteViewer : Form {
     static bool EscapeChord(int vk,HashSet<int> held){return vk==81&&(held.Contains(162)||held.Contains(163)||held.Contains(17))&&(held.Contains(164)||held.Contains(165)||held.Contains(18))&&(held.Contains(160)||held.Contains(161)||held.Contains(16));}
     static string ButtonName(int value){return value==1?"left":value==2?"right":"middle";}
     bool ViewerForeground {get{var foreground=GetForegroundWindow();return foreground!=IntPtr.Zero&&(foreground==Handle||foreground==videoWindow||IsChild(Handle,foreground)||GetAncestor(foreground,2)==Handle);}}
-    bool ActiveInput {get{return mine&&armed&&!stopped&&ViewerForeground;}}
-    void InstallHooks(){if(keyboardHook!=IntPtr.Zero||stopped)return;keyboardHook=SetWindowsHookEx(13,keyboardProc,GetModuleHandle(null),0);mouseHook=SetWindowsHookEx(14,mouseProc,GetModuleHandle(null),0);if(keyboardHook==IntPtr.Zero||mouseHook==IntPtr.Zero){ViewerLog("hook installation failed: "+Marshal.GetLastWin32Error());Unhook();state.Text="입력 훅을 시작하지 못했습니다.";}}
+    bool ActiveInput {get{return mine&&armed&&!stopped&&(ViewerForeground||ContainsFocus);}}
+    void InstallHooks(){if(keyboardHook!=IntPtr.Zero||stopped)return;keyboardHook=SetWindowsHookEx(13,keyboardProc,GetModuleHandle(null),0);mouseHook=SetWindowsHookEx(14,mouseProc,GetModuleHandle(null),0);if(keyboardHook==IntPtr.Zero){ViewerLog("hook installation failed: "+Marshal.GetLastWin32Error());Unhook();state.Text="입력 훅을 시작하지 못했습니다.";}}
     void Unhook(){if(keyboardHook!=IntPtr.Zero)UnhookWindowsHookEx(keyboardHook);if(mouseHook!=IntPtr.Zero)UnhookWindowsHookEx(mouseHook);keyboardHook=mouseHook=IntPtr.Zero;Cursor.Current=Cursors.Default;}
     IntPtr Keyboard(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){int vk=Marshal.ReadInt32(data),flags=Marshal.ReadInt32(data,8);
         bool down=message.ToInt32()==256||message.ToInt32()==260;
         lock(heldLock){if(down&&EscapeChord(vk,keys)){BeginInvoke((Action)delegate{armed=false;SuspendInput();mine=false;Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});state.Text="보기 전용 · 로컬 복귀";});return new IntPtr(1);}if(down)keys.Add(vk);else keys.Remove(vk);}
         Send("type="+(down?"keydown":"keyup")+"&vk="+vk+"&extended="+(((flags&1)!=0)?"1":"0"));return new IntPtr(1);
     }return CallNextHookEx(IntPtr.Zero,code,message,data);}
-    IntPtr Mouse(int code,IntPtr message,IntPtr data){if(code>=0&&ActiveInput){var p=(MouseData)Marshal.PtrToStructure(data,typeof(MouseData));if(PointToClient(p.point).Y<bar.Height+FixedDpiLayout.Px(6))bar.Visible=true;if(bar.Visible&&bar.RectangleToScreen(bar.ClientRectangle).Contains(p.point)){if(buttons.Count>0)ReleaseHeld();return CallNextHookEx(IntPtr.Zero,code,message,data);}Point local=canvas.PointToClient(p.point);int x,y;
-        bool inside=MapPoint(local,canvas.ClientSize,width,height,out x,out y);if(!inside){Cursor.Current=Cursors.Default;if(buttons.Count>0)ReleaseHeld();return CallNextHookEx(IntPtr.Zero,code,message,data);}Cursor.Current=null;
-        int msg=message.ToInt32();string pos="client="+client+"&screen="+display+"&type=pos&x="+x+"&y="+y;
-        if(msg==512){long now=Stopwatch.GetTimestamp();if((now-lastMove)*1000/Stopwatch.Frequency>=8){lastMove=now;Interlocked.Exchange(ref position,pos);wake.Set();}return new IntPtr(1);}
-        int b=msg==513||msg==514?1:msg==516||msg==517?2:msg==519||msg==520?3:0;
-        if(b!=0){Interlocked.Exchange(ref position,null);bool down=msg==513||msg==516||msg==519;Send("type=pos&x="+x+"&y="+y);lock(heldLock){if(down)buttons.Add(b);else buttons.Remove(b);}Send("type="+(down?"down":"up")+"&button="+ButtonName(b));return new IntPtr(1);}
-        if(msg==522){int delta=(short)((p.mouseData>>16)&65535);Send("type=wheel&amount="+Math.Max(-15,Math.Min(15,-delta/120)));return new IntPtr(1);}
-    }return CallNextHookEx(IntPtr.Zero,code,message,data);}
+    IntPtr ObserveMouse(int code,IntPtr message,IntPtr data){
+        if(code>=0){mouseObserved++;if(ActiveInput){
+            var packet=(MouseData)Marshal.PtrToStructure(data,typeof(MouseData));Point point=canvas.PointToClient(packet.point);int x,y,msg=message.ToInt32();
+            if(point.Y<bar.Height+FixedDpiLayout.Px(6))bar.Visible=true;
+            if(PointerPosition(point,out x,out y)){
+                mouseForwarded++;
+                if(msg==512){CanvasMove(canvas,new MouseEventArgs(MouseButtons.None,0,point.X,point.Y,0));return CallNextHookEx(IntPtr.Zero,code,message,data);}
+                MouseButtons button=msg==513||msg==514?MouseButtons.Left:msg==516||msg==517?MouseButtons.Right:msg==519||msg==520?MouseButtons.Middle:MouseButtons.None;
+                if(button!=MouseButtons.None){var e=new MouseEventArgs(button,1,point.X,point.Y,0);if(msg==513||msg==516||msg==519)CanvasDown(canvas,e);else CanvasUp(canvas,e);return new IntPtr(1);}
+                if(msg==522){Send("type=wheel&amount="+Math.Max(-15,Math.Min(15,-(short)(packet.mouseData>>16)/120)));return new IntPtr(1);}
+            }else if(buttons.Count>0)ReleaseHeld();
+        }}return CallNextHookEx(IntPtr.Zero,code,message,data);
+    }
+    bool PointerPosition(Point point,out int x,out int y){
+        if(bar.Visible&&bar.RectangleToScreen(bar.ClientRectangle).Contains(canvas.PointToScreen(point))){x=y=0;return false;}
+        return MapPoint(point,canvas.ClientSize,width,height,out x,out y);
+    }
+    void CanvasMove(object sender,MouseEventArgs e){
+        if(e.Y<bar.Height+FixedDpiLayout.Px(6))bar.Visible=true;
+        if(!ActiveInput)return;int x,y;if(!PointerPosition(e.Location,out x,out y))return;
+        long now=Stopwatch.GetTimestamp();if((now-lastMove)*1000/Stopwatch.Frequency<8)return;lastMove=now;
+        Interlocked.Exchange(ref position,"client="+client+"&screen="+display+"&type=pos&x="+x+"&y="+y);wake.Set();
+    }
+    static int PointerButton(MouseButtons button){return button==MouseButtons.Left?1:button==MouseButtons.Right?2:button==MouseButtons.Middle?3:0;}
+    void CanvasDown(object sender,MouseEventArgs e){
+        if(!ActiveInput)return;int x,y,button=PointerButton(e.Button);if(button==0||!PointerPosition(e.Location,out x,out y))return;
+        Interlocked.Exchange(ref position,null);Send("type=pos&x="+x+"&y="+y);
+        lock(heldLock)buttons.Add(button);canvas.Capture=true;Send("type=down&button="+ButtonName(button));
+    }
+    void CanvasUp(object sender,MouseEventArgs e){
+        int button=PointerButton(e.Button);bool held;lock(heldLock)held=buttons.Remove(button);
+        if(held)Send("type=up&button="+ButtonName(button));if(buttons.Count==0)canvas.Capture=false;
+    }
+    void CanvasWheel(object sender,MouseEventArgs e){
+        var handled=e as HandledMouseEventArgs;if(handled!=null&&handled.Handled)return;
+        int x,y;if(!ActiveInput||!PointerPosition(canvas.PointToClient(Cursor.Position),out x,out y))return;
+        Send("type=wheel&amount="+Math.Max(-15,Math.Min(15,-e.Delta/120)));if(handled!=null)handled.Handled=true;
+    }
+    protected override void WndProc(ref Message message){
+        if(message.Msg==0x20&&mine&&armed&&canvas!=null){
+            Point point=Cursor.Position;int x,y;
+            if(!(bar.Visible&&bar.RectangleToScreen(bar.ClientRectangle).Contains(point))&&MapPoint(canvas.PointToClient(point),canvas.ClientSize,width,height,out x,out y)){
+                SetCursor(IntPtr.Zero);message.Result=new IntPtr(1);return;
+            }
+        }
+        base.WndProc(ref message);
+    }
     internal static bool MapPoint(Point p,Size area,int w,int h,out int x,out int y){double scale=Math.Min((double)area.Width/w,(double)area.Height/h);double left=(area.Width-w*scale)/2,top=(area.Height-h*scale)/2;x=y=0;if(scale<=0||p.X<left||p.Y<top||p.X>=left+w*scale||p.Y>=top+h*scale)return false;x=(int)Math.Round((p.X-left)*10000/Math.Max(1,w*scale-1));y=(int)Math.Round((p.Y-top)*10000/Math.Max(1,h*scale-1));x=Math.Max(0,Math.Min(10000,x));y=Math.Max(0,Math.Min(10000,y));return true;}
     static int Int(Stream s){var b=Bytes(s,4);return (b[0]<<24)|(b[1]<<16)|(b[2]<<8)|b[3];}
     static byte[] Bytes(Stream s,int count){var b=new byte[count];int n=0;while(n<count){int got=s.Read(b,n,count-n);if(got==0)throw new EndOfStreamException();n+=got;}return b;}
@@ -163,7 +212,7 @@ class RemoteViewer : Form {
     void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;int gen=generation;try{r=StreamRequest("/video?fps=60&quality=native&mbps=60");videoRequest=r;using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50435631)throw new IOException("잘못된 영상 헤더");width=Int(input);height=Int(input);int fps=Int(input);if(width<1||width>16384||height<1||height>16384||fps<1||fps>240)throw new IOException("잘못된 영상 크기");
         Size target=Size.Empty;Invoke((Action)delegate{target=canvas.ClientSize;});p=Play((hardware?"-hwaccel d3d11va ":"")+"-loglevel error -noborder -x "+target.Width+" -y "+target.Height+" -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -sync ext -f h264 -i pipe:0");player=p;
-        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);EnableWindow(videoWindow,false);SetWindowLong(embedded.MainWindowHandle,-16,0x50000000);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();});break;}Thread.Sleep(50);}});
+        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);SetWindowLong(videoWindow,-16,0x50000000);EnableWindow(videoWindow,false);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();canvas.Focus();});break;}Thread.Sleep(50);}});
         while(!stopped&&gen==generation){int size=Int(input);Bytes(input,8);if(size<1||size>8388608)throw new IOException("영상 패킷 크기 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,b.Length);p.StandardInput.BaseStream.Flush();}
     }}catch(Exception e){if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0)hardware=false;if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;if(videoRequest==r)videoRequest=null;}if(!stopped&&gen==generation)Thread.Sleep(300);}}
     void AudioLoop(){HttpWebRequest r=null;Process p=null;try{r=StreamRequest("/audio");using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
@@ -178,6 +227,7 @@ class RemoteViewer : Form {
     [DllImport("user32.dll",SetLastError=true)]static extern IntPtr SetWindowsHookEx(int id,Hook callback,IntPtr module,uint thread);
     [DllImport("user32.dll")]static extern bool UnhookWindowsHookEx(IntPtr hook);
     [DllImport("user32.dll")]static extern IntPtr CallNextHookEx(IntPtr hook,int code,IntPtr message,IntPtr data);
+    [DllImport("user32.dll")]static extern IntPtr SetCursor(IntPtr cursor);
     [DllImport("user32.dll")]static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")]static extern bool IsChild(IntPtr parent,IntPtr child);
     [DllImport("user32.dll")]static extern IntPtr GetAncestor(IntPtr window,uint flags);
@@ -209,4 +259,8 @@ internal static class FixedDpiLayout {
         form.ClientSize=new Size(Math.Min(desired.Width,Math.Max(360,work.Width-40)),Math.Min(desired.Height,Math.Max(240,work.Height-100)));
         form.ResumeLayout(true);
     }
+}
+
+internal sealed class InputSurface : Panel {
+    internal InputSurface(){SetStyle(ControlStyles.Selectable,true);TabStop=true;}
 }
