@@ -156,7 +156,7 @@ class MainActivity : Activity() {
 
         composer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "composer" }
         val composeRow = row().apply { gravity = Gravity.CENTER_VERTICAL }
-        typed = entry("Claude·Codex 명령 또는 한글 입력", false).apply {
+        typed = entry("여기에 입력", false).apply {
             setSingleLine(false); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             maxLines = 3; imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
             setPadding(dp(10), dp(6), dp(10), dp(6)); showSoftInputOnFocus = true
@@ -216,7 +216,7 @@ class MainActivity : Activity() {
         controlScroll.visibility = if (expanded) View.VISIBLE else View.GONE
         mouseToggleButton.text = if (expanded) "접기" else "펼치기"
         shortcutStrip.visibility = if (compactLandscape && !expanded) View.GONE else View.VISIBLE
-        workspace.controlHeightDp = if (expanded) 228 else if (compactLandscape) 88 else 132
+        workspace.controlHeightDp = if (expanded) 244 else if (compactLandscape) 88 else 132
     }
 
     private fun toggleMouse() {

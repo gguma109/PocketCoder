@@ -59,6 +59,8 @@ class ResponsiveUiTest {
             seedScreen(screen)
             val pad = descendants(decor).filterIsInstance<TrackPadView>().single()
             assertEquals((88 * pad.resources.displayMetrics.density).toInt(), pad.height)
+            val padBounds = Rect(); assertTrue(pad.getGlobalVisibleRect(padBounds))
+            assertEquals("Entire compact trackpad must fit", pad.height, padBounds.height())
             save(decor, "s25-mouse")
             val originalHeight = screen.height
             val typed = decor.findViewWithTag<android.widget.EditText>("phoneInput")
