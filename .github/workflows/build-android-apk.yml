@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/pocketcoder-signing.p12
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
     defaults:
       run:
@@ -45,10 +44,12 @@ jobs:
           value = os.environ.get('KEYSTORE_BASE64', '')
           if not value or not os.environ.get('ANDROID_KEYSTORE_PASSWORD'):
               raise SystemExit('Configure the Android signing secrets before distribution builds.')
-          path = os.environ['ANDROID_KEYSTORE_PATH']
+          path = os.path.join(os.environ['RUNNER_TEMP'], 'pocketcoder-signing.p12')
           with open(path, 'wb') as f:
               f.write(base64.b64decode(value))
           os.chmod(path, 0o600)
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write('ANDROID_KEYSTORE_PATH=' + path + '\n')
           PY
       - name: Build signed APK and verify Android
         run: gradle --no-daemon :app:assembleRelease :app:testDebugUnitTest :app:lintRelease --stacktrace
