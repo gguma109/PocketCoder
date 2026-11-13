@@ -1,7 +1,9 @@
 # PocketCoder — Kotlin 원격 개발 콘솔
 
 Android에서 Windows/macOS PC 화면을 보고 마우스와 키보드를 조작하는 MVP입니다.
-0.2.0은 Tailscale 외부 접속과 연속 MJPEG 스트리밍(기본 목표 15fps)을 지원합니다.
+0.3.0은 **Tailscale 로그인만으로 연결**합니다. 토큰 입력이 필요 없습니다.
+한 번 PC 주소를 입력해 연결하면 다음 앱 실행부터 자동 연결합니다.
+연속 MJPEG 스트리밍(기본 목표 15fps)과 트랙패드를 지원합니다.
 원본 Kotlin UI, JPEG 화면, 트랙패드, 클릭/우클릭/더블클릭/스크롤, 개발자 키보드,
 Ctrl/Alt/Shift/Meta 조합키와 한글 붙여넣기를 유지합니다. 쉘 실행 API는 없습니다.
 
@@ -23,7 +25,8 @@ CI의 debug 서명키가 바뀌어 업데이트가 거부되면 기존 앱 삭�
 4. 외부 접속은 `run-tailscale-windows.bat`를 사용하면 활성 Tailscale IPv4에 자동 바인딩합니다.
    수동 실행은 ipconfig의 Tailscale IPv4 또는 사설 LAN IPv4를 입력합니다.
 5. 방화벽은 신뢰하는 개인 네트워크에만 허용합니다. 공용 네트워크에서는 허용하지 마세요.
-6. 창에 표시된 Access token을 휴대폰에 입력합니다. 재시작마다 토큰이 바뀝니다.
+6. Tailscale 모드에서는 토큰이 없습니다. 휴대폰도 PC와 같은 Tailscale 사용자 계정으로 로그인합니다.
+   LAN/구형 서버 모드만 별도 토큰을 사용합니다.
 7. Ctrl+C 또는 CMD 창 닫기로 서버를 종료합니다.
 
 직접 실행: `java -jar pocketcoder-server.jar --bind=192.168.0.10 --port=8765`
@@ -37,7 +40,11 @@ macOS는 `sh run-macos.sh`를 실행하고 Java/터미널에 화면 기록/손�
 
 외부에서는 PC와 스마트폰을 같은 Tailscale 네트워크에 연결합니다(LTE/5G 가능).
 LAN 접속은 같은 신뢰하는 Wi-Fi를 사용합니다. 앱에 PC LAN/Tailscale IP:포트와
-서버 토큰을 입력하고 PC 연결을 누릅니다. 화면 탭은 해당 위치 클릭, 트랙패드는 마우스 이동,
+PC 연결을 누릅니다. **Tailscale 로그인은 Tailscale 앱에서 한 번만** 진행합니다.
+서버는 실제 접속 IP를 로컬 Tailscale 서비스에 조회하여 PC와 같은 사용자 소유 기기인지 확인합니다.
+클라이언트가 보낸 이메일이나 X-Forwarded 헤더로 인증하지 않습니다.
+다른 사용자/태그 기기/만료된 로그인/조회 실패는 거부합니다. PC 주소는 최초 한 번 필요합니다.
+화면 탭은 해당 위치 클릭, 트랙패드는 마우스 이동,
 길게 누르기는 우클릭, 두 손가락 이동은 스크롤입니다. L/R 버튼도 사용할 수 있습니다.
 Ctrl/Alt/Shift/CMD는 다음 키 입력과 조합된 뒤 해제됩니다.
 한글/여러 줄은 하단 입력창에서 전송합니다(1,000자 이하). PC 활성 창에 클립보드로 붙여넣으므로
@@ -48,7 +55,10 @@ Ctrl/Alt/Shift/CMD는 다음 키 입력과 조합된 뒤 해제됩니다.
 - 서버 HTTP 자체는 암호화되지 않습니다. 직접 통신은 신뢰하는 LAN 전용이고, 외부 접속은 Tailscale 암호화 터널을 사용합니다.
 - 직접 HTTP를 공용 Wi-Fi에서 사용하지 마세요. 포트포워딩/Funnel/공용 터널로 TCP 8765를 인터넷에 노출하지 마세요.
   사설 주소 바인딩 자체가 라우터의 포트포워딩을 막지는 않습니다.
-- 토큰은 서버 시작 시 SecureRandom 256비트로 생성하고 Bearer 헤더에만 전달합니다.
+- 기본 Tailscale 모드는 토큰을 생성하지 않습니다. 동일 Tailscale 사용자 소유 기기만 허용합니다.
+  `tailscale whois --json`으로 실제 소켓의 원격 주소를 검증하며 조회 실패 시 거부합니다.
+  인증 캐시는 최대 5초이고 스트림 도중에도 재확인합니다. PC에서 Tailscale CLI 접근이 가능해야 합니다.
+- LAN/구형 호환 모드 토큰은 시작 시 SecureRandom 256비트로 생성하고 Bearer 헤더에만 전달합니다.
   소스에 토큰/비밀번호를 넣지 않으며 토큰을 GitHub 이슈/로그에 올리지 마세요.
 - 앱은 주소만 로컬 저장하며 토큰은 Preferences/화면 상태/자동완성에 저장하지 않습니다.
   HTTP 리디렉션을 거부하여 다른 서버로 토큰을 전달하지 않습니다.
@@ -74,7 +84,7 @@ gradle --no-daemon serverJar selfTest
 java -jar pocketcoder-server.jar --self-test
 ```
 
-기존 build-server.sh도 kotlinc와 JDK 17 이상으로 사용 가능합니다.
+build-server.sh도 Gradle 8.9와 JDK 17 이상을 사용합니다(서버 JSON 파싱 의존성 포함).
 CI는 main 푸시/수동 실행 시 APK/lint와 서버 JAR/자체 테스트를 수행하고 두 Artifact를 업로드합니다.
 자체 테스트는 Unicode, 한글 1,000자, 키 매핑, 인증/메서드, LAN/Tailscale 주소 경계,
 실제 HTTP로 전송한 MJPEG 3프레임의 파싱/디코딩을 확인합니다.
@@ -83,11 +93,12 @@ Android 테스트는 multipart 분할/잘못된 크기, 입력 병합/만료/순
 
 ## 프로토콜
 
-모든 요청은 `Authorization: Bearer <실행 시 생성된 토큰>`을 요구합니다.
+Tailscale 모드 요청은 Authorization 헤더 없이 로그인된 기기 신원으로 인증합니다.
+LAN/구형 모드 요청만 `Authorization: Bearer <실행 시 생성된 토큰>`을 요구합니다.
 
 | 요청 | 내용 |
 | --- | --- |
-| GET /health | JSON: ok, width, height, display, stream, fps |
+| GET /health | JSON: ok, width, height, display, stream, fps, auth |
 | GET /frame | JPEG, 최대 1280×720 |
 | GET /stream | 인증된 multipart/x-mixed-replace MJPEG, 한 연결에서 연속 프레임 |
 | POST /input | UTF-8 application/x-www-form-urlencoded, 최대 32 KiB |

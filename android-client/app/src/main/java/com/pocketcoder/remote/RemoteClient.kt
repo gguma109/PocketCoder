@@ -18,7 +18,8 @@ import java.util.concurrent.atomic.AtomicReference
 /** HTTP over a trusted LAN or an encrypted Tailscale tunnel. Token only in Bearer headers. */
 class RemoteClient(
     private val onState: (Boolean, String) -> Unit,
-    private val onFrame: (Bitmap) -> Unit
+    private val onFrame: (Bitmap) -> Unit,
+    private val onLoginConnected: (String) -> Unit = {}
 ) {
     private data class Session(val id: Int, val base: String, val token: String, val input: InputBuffer = InputBuffer())
     private data class Frame(val session: Int, val bitmap: Bitmap)
@@ -33,25 +34,28 @@ class RemoteClient(
     @Volatile private var active = false
     @Volatile private var session: Session? = null
 
-    fun connect(rawHost: String, auth: String) {
+    fun connect(rawHost: String, auth: String = "", legacyMode: Boolean = false) {
         val host = rawHost.trim().removePrefix("http://").trimEnd('/')
-        if (!host.matches(Regex("[a-zA-Z0-9.:-]+")) || auth.trim().length < 20) {
-            onState(false, "PC 주소 또는 인증 토큰을 확인하세요")
+        if (!host.matches(Regex("[a-zA-Z0-9.:-]+")) || (legacyMode && auth.trim().length < 20)) {
+            onState(false, if (legacyMode) "PC 주소 또는 인증 토큰을 확인하세요" else "PC Tailscale 주소를 확인하세요")
             return
         }
         disconnect(silent = true)
-        val current = Session(epoch.incrementAndGet(), "http://$host", auth.trim())
+        val current = Session(epoch.incrementAndGet(), "http://$host", if (legacyMode) auth.trim() else "")
         session = current
         state(current, false, "PC 접속 확인 중…")
         frameWorker.execute {
             try {
                 val streaming = withFrameConnection(open(current, "/health")) { c ->
+                    if (c.responseCode == 401 && !legacyMode) throw IOException("PC·휴대폰 Tailscale에 같은 계정으로 로그인하세요. 새 서버 0.3.0이 필요합니다.")
                     if (c.responseCode != 200) throw IOException("서버 인증 실패 (HTTP ${c.responseCode})")
                     val json = c.inputStream.use { JSONObject(it.bufferedReader(Charsets.UTF_8).readText()) }
+                    if (!legacyMode && json.optString("auth") != "tailscale") throw IOException("Tailscale 로그인 서버 0.3.0으로 업데이트하세요")
                     json.optString("stream") == "mjpeg"
                 }
                 if (!isCurrent(current)) return@execute
                 active = true
+                if (!legacyMode) main.post { if (isCurrent(current)) onLoginConnected(host) }
                 state(current, true, if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
                 var failures = 0
                 while (isCurrent(current) && active && !Thread.currentThread().isInterrupted) {
@@ -185,7 +189,7 @@ class RemoteClient(
             connectTimeout = 3000
             readTimeout = 5000
             useCaches = false
-            setRequestProperty("Authorization", "Bearer ${current.token}")
+            if (current.token.isNotEmpty()) setRequestProperty("Authorization", "Bearer ${current.token}")
             setRequestProperty("Cache-Control", "no-store")
         }
 }

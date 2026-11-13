@@ -6,10 +6,16 @@
 4. 이 ZIP의 파일을 모두 같은 폴더에 풀고 `run-tailscale-windows.bat`를 실행합니다.
    서버가 활성 Tailscale 인터페이스를 찾아 그 IPv4 주소에만 바인딩합니다.
 5. 자동 감지가 안 되면 `run-windows.bat`에서 Tailscale 어댑터의 IPv4를 직접 입력합니다.
-6. 휴대폰 PocketCoder 0.2.0에 서버 창의 `Bind` 주소와 새 토큰을 입력하고 연결합니다.
+6. 휴대폰 PocketCoder 0.3.0에 서버 창의 `Bind` 주소만 입력하고 연결합니다. **토큰은 없습니다.**
+   최초 연결 후에는 주소를 기억하여 다음 앱 실행부터 자동으로 연결합니다.
 7. 휴대폰 Wi-Fi를 끄고 LTE/5G에서 연결해 외부 접속을 확인합니다. PC는 켜져 있고 절전 상태가 아니어야 합니다.
 
 직접 실행: `java -jar pocketcoder-server.jar --bind=tailscale --port=8765 --fps=15`
+
+로그인은 Tailscale 앱에서 수행합니다. 서버는 로컬 Tailscale CLI의 whois 결과로 접속 기기가
+PC와 같은 Tailscale 사용자 소유인지 확인합니다. 같은 tailnet의 다른 사용자나 태그 기기는 거부합니다.
+Tailscale 로그아웃/기기 로그인 만료/CLI 조회 실패 시 접속을 허용하지 않습니다.
+LAN/이전 서버 호환은 앱의 '고급: LAN / 이전 서버 연결'에서만 토큰을 사용합니다.
 
 Tailscale의 터널이 암호화를 제공합니다. 서버 자체는 HTTP이고 인터넷에 직접 노출하면 안 됩니다.
 공유기 포트포워딩, Tailscale Funnel, 공용 터널은 사용하지 않습니다.

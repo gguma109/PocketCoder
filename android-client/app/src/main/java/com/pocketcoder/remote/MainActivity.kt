@@ -25,6 +25,7 @@ class MainActivity : Activity() {
     private lateinit var screen: RemoteScreenView
     private lateinit var address: EditText
     private lateinit var secret: EditText
+    private lateinit var legacyMode: CheckBox
     private lateinit var typed: EditText
     private lateinit var status: TextView
     private lateinit var config: LinearLayout
@@ -41,9 +42,17 @@ class MainActivity : Activity() {
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         client = RemoteClient(
             onState = { on, message -> runOnUiThread { showState(on, message) } },
-            onFrame = { bitmap -> runOnUiThread { screen.show(bitmap) } }
+            onFrame = { bitmap -> runOnUiThread { screen.show(bitmap) } },
+            onLoginConnected = { host ->
+                getSharedPreferences("pocketcoder", MODE_PRIVATE).edit().putString("autoAddress", host).apply()
+            }
         )
         buildLayout()
+        val remembered = getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("autoAddress", null)
+        if (!remembered.isNullOrBlank()) {
+            address.setText(remembered)
+            client.connect(remembered)
+        }
     }
 
     private fun buildLayout() {
@@ -75,15 +84,27 @@ class MainActivity : Activity() {
             background = round(panel, 13)
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        config.addView(text("PC 연결 · Tailscale 또는 신뢰하는 LAN", 12f, muted), bottomMargin(8))
-        address = entry("PC LAN/Tailscale IP:포트", false)
+        config.addView(text("PC·휴대폰 Tailscale에 같은 계정으로 로그인하세요", 12f, muted), bottomMargin(8))
+        config.addView(text("토큰 없이 연결 · PC 주소는 처음 한 번만 입력", 11f, gold), bottomMargin(8))
+        address = entry("PC Tailscale IP:포트", false)
         address.setText(getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("address", ""))
         config.addView(address, bottomMargin(6))
         secret = entry("PC 서버에 표시된 인증 토큰", true)
+        secret.visibility = View.GONE
         secret.isSaveEnabled = false
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             secret.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         }
+        legacyMode = CheckBox(this).apply {
+            text = "고급: LAN / 이전 서버 연결"
+            textSize = 11f
+            setTextColor(muted)
+            setOnCheckedChangeListener { _, checked ->
+                secret.visibility = if (checked) View.VISIBLE else View.GONE
+                if (!checked) secret.text.clear()
+            }
+        }
+        config.addView(legacyMode)
         config.addView(secret, bottomMargin(8))
         connectButton = tile("PC 연결", navy, gold, -1, 44) { toggleConnection() }
         config.addView(connectButton)
@@ -179,7 +200,8 @@ class MainActivity : Activity() {
         if (connected) { client.disconnect(); return }
         val host = address.text.toString()
         getSharedPreferences("pocketcoder", MODE_PRIVATE).edit().putString("address", host.trim()).apply()
-        client.connect(host, secret.text.toString())
+        getSharedPreferences("pocketcoder", MODE_PRIVATE).edit().remove("autoAddress").apply()
+        client.connect(host, secret.text.toString(), legacyMode.isChecked)
     }
 
     private fun showState(isOnline: Boolean, message: String) {

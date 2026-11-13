@@ -34,6 +34,7 @@ fun main(args: Array<String>) {
     if (args.contains("--help")) {
         println("Usage: java -jar pocketcoder-server.jar [--bind=127.0.0.1] [--port=8765] [--display=0]")
         println("Use --bind=<private LAN or Tailscale IPv4>. Use --fps=15 (1..30) for MJPEG streaming.")
+        println("Tailscale binding defaults to same-account login, with no token. LAN uses --auth=token.")
         return
     }
     val requestedBind = option(args, "bind", "127.0.0.1")
@@ -58,18 +59,27 @@ fun main(args: Array<String>) {
     val device = devices[display]
     val area = device.defaultConfiguration.bounds
     val robot = Robot(device).apply { autoDelay = 8; isAutoWaitForIdle = false }
-    val token = newToken()
+    val authMode = option(args, "auth", if (isTailscaleAddress(bind)) "tailscale" else "token")
+    require(authMode in listOf("tailscale", "token")) { "auth must be tailscale or token" }
+    val token = if (authMode == "token") newToken() else null
+    val authorize: (HttpExchange) -> Boolean = if (authMode == "tailscale") {
+        require(isTailscaleAddress(bind)) { "Login-only mode requires a Tailscale bind address" }
+        val lookup = tailscaleLookup()
+        val auth = TailscaleAuth(bind, lookup(bind), lookup)
+        val checkIdentity: (HttpExchange) -> Boolean = { ex -> auth.allows(ex) }
+        checkIdentity
+    } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val app = DesktopController(robot, area)
     val server = HttpServer.create(InetSocketAddress(bind, port), 32)
     server.executor = Executors.newFixedThreadPool(8) { r -> Thread(r, "pocketcoder-http").apply { isDaemon = true } }
 
     server.createContext("/health") { ex ->
-        guarded(ex, token, "GET") {
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"width":${area.width},"height":${area.height},"display":$display,"stream":"mjpeg","fps":$fps}""".toByteArray())
+        guarded(ex, authorize, "GET") {
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"width":${area.width},"height":${area.height},"display":$display,"stream":"mjpeg","fps":$fps,"auth":"$authMode"}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
-        guarded(ex, token, "GET") {
+        guarded(ex, authorize, "GET") {
             val jpeg = app.jpeg()
             send(ex, 200, "image/jpeg", jpeg)
         }
@@ -77,7 +87,7 @@ fun main(args: Array<String>) {
     // One viewer per desktop. A slow reader never builds an application frame queue.
     val streamSlot = Semaphore(1)
     server.createContext("/stream") { ex ->
-        guarded(ex, token, "GET") {
+        guarded(ex, authorize, "GET") {
             if (!streamSlot.tryAcquire()) { sendError(ex, 409, "A screen stream is already active"); return@guarded }
             try {
                 ex.responseHeaders.set("Content-Type", "multipart/x-mixed-replace; boundary=pocketcoder-frame")
@@ -85,6 +95,7 @@ fun main(args: Array<String>) {
                 ex.responseBody.use { output ->
                     while (!Thread.currentThread().isInterrupted) {
                         val started = System.nanoTime()
+                        if (!authorize(ex)) break
                         writeMjpegFrame(output, app.jpeg())
                         val remaining = 1_000_000_000L / fps - (System.nanoTime() - started)
                         if (remaining > 0) Thread.sleep(remaining / 1_000_000, (remaining % 1_000_000).toInt())
@@ -96,7 +107,7 @@ fun main(args: Array<String>) {
         }
     }
     server.createContext("/input") { ex ->
-        guarded(ex, token, "POST") {
+        guarded(ex, authorize, "POST") {
             val len = ex.requestHeaders.getFirst("Content-Length")?.toIntOrNull()
             if (len != null && len > 32768) { sendError(ex, 413, "Request too large"); return@guarded }
             val body = ex.requestBody.use { it.readNBytes(32769) }
@@ -117,8 +128,14 @@ fun main(args: Array<String>) {
     println("=============================================")
     println(" Bind:    $bind:$port")
     println(" Display: $display (${area.width} x ${area.height})")
-    println(" Access token (new each restart):\n $token")
-    println(" Enter IP:port and token in the Android app.")
+    if (authMode == "tailscale") {
+        println(" Login: Tailscale account authentication. No access token needed.")
+        println(" Only devices owned by the SAME Tailscale user are allowed.")
+        println(" Enter IP:port once in the Android app; it reconnects automatically next launch.")
+    } else {
+        println(" Access token (LAN/legacy mode, new each restart):\n $token")
+        println(" Enter IP:port and token in the Android app's LAN/legacy mode.")
+    }
     println(" Stream:  MJPEG, target $fps fps (actual rate depends on CPU/network)")
     if (isTailscaleAddress(bind)) {
         println(" Tailscale address: connect the phone to the SAME tailnet, including over LTE/5G.")
@@ -152,12 +169,19 @@ internal fun isTailscaleAddress(value: String): Boolean {
 private fun newToken(): String = ByteArray(32).also(SecureRandom()::nextBytes)
     .let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
 
-private fun guarded(ex: HttpExchange, token: String, method: String, block: () -> Unit) {
+private fun bearerAuthorized(ex: HttpExchange, token: String): Boolean {
+    val actual = ex.requestHeaders.getFirst("Authorization")?.removePrefix("Bearer ") ?: ""
+    return MessageDigest.isEqual(actual.toByteArray(), token.toByteArray())
+}
+
+private fun guarded(ex: HttpExchange, token: String, method: String, block: () -> Unit) =
+    guarded(ex, { bearerAuthorized(it, token) }, method, block)
+
+private fun guarded(ex: HttpExchange, authorize: (HttpExchange) -> Boolean, method: String, block: () -> Unit) {
     try {
         if (ex.requestMethod != method) { sendError(ex, 405, "Method not allowed"); return }
-        val actual = ex.requestHeaders.getFirst("Authorization")?.removePrefix("Bearer ") ?: ""
-        if (!MessageDigest.isEqual(actual.toByteArray(), token.toByteArray())) {
-            sendError(ex, 401, "Unauthorized"); return
+        if (!authorize(ex)) {
+            sendError(ex, 401, "Not authorized. Connect PC and phone to Tailscale with the same personal account."); return
         }
         ex.responseHeaders.set("Cache-Control", "no-store")
         block()
@@ -326,6 +350,7 @@ private class DesktopController(private val robot: Robot, private val bounds: Re
 private inline fun Graphics2D.useGraphics(block: (Graphics2D) -> Unit) = try { block(this) } finally { dispose() }
 
 private fun selfTest() {
+    tailscaleAuthSelfTest()
     check(decodeForm("type=text&value=%ED%95%9C%EA%B8%80+OK")["value"] == "한글 OK")
     check(keyCode("ESC") == KeyEvent.VK_ESCAPE)
     check(keyCode("F12") == KeyEvent.VK_F12)
@@ -351,7 +376,7 @@ private fun selfTest() {
     check(encoded.toByteArray(StandardCharsets.UTF_8).size <= 32768)
     check(decodeForm(encoded)["value"] == korean)
     protocolSelfTest(encoded, korean)
-    println("PASS: HTTP auth/methods / Unicode / keys / token / LAN and Tailscale bind / MJPEG transport")
+    println("PASS: HTTP auth/methods / Tailscale same-user identity and fail-closed checks / Unicode / keys / LAN and Tailscale bind / MJPEG transport")
 }
 
 /** Real loopback HTTP transport test, without screen capture or GUI input. */
