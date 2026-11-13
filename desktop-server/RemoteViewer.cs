@@ -33,11 +33,11 @@ class RemoteViewer : Form {
     public static void Open(IWin32Window owner) {
         if(current!=null&&!current.IsDisposed){current.Activate();return;}
         using(var dialog=new Form()) {
-            dialog.Text="다른 PC 보기 · Tailscale";dialog.ClientSize=new Size(440,145);dialog.StartPosition=FormStartPosition.CenterParent;
-            var label=new Label{Text="원격 PC의 Tailscale IPv4:포트 (같은 계정)",Left=15,Top=12,Width=410};
+            dialog.AutoScaleMode=AutoScaleMode.None;dialog.Font=new Font("Malgun Gothic",10);dialog.Text="다른 PC 보기 · Tailscale";dialog.ClientSize=new Size(440,160);dialog.StartPosition=FormStartPosition.CenterParent;
+            var label=new Label{Text="원격 PC의 Tailscale IPv4:포트 (같은 계정)",Left=15,Top=12,Width=410,Height=28};
             var box=new TextBox{Left=15,Top=42,Width=410,Text=LoadSetting("address","")};
-            var connect=new Button{Text="연결",Left=315,Top=87,Width=110,DialogResult=DialogResult.OK};
-            dialog.Controls.AddRange(new Control[]{label,box,connect});dialog.AcceptButton=connect;
+            var connect=new Button{Text="연결",Left=315,Top=95,Width=110,Height=42,DialogResult=DialogResult.OK};
+            dialog.Controls.AddRange(new Control[]{label,box,connect});dialog.AcceptButton=connect;FixedDpiLayout.Apply(dialog,0);
             if(dialog.ShowDialog(owner)!=DialogResult.OK)return;
             try{string address=ValidateAddress(box.Text); var health=ReadJson(address,"/health",null);
                 if(Convert.ToString(health["auth"])!="tailscale" || new Version(Convert.ToString(health["version"]))<new Version("0.8.0"))throw new Exception("Tailscale 모드의 0.8.0 이상 서버가 필요합니다.");
@@ -61,21 +61,21 @@ class RemoteViewer : Form {
     string Fields(string action){return "client="+client+"&action="+action+"&label="+Uri.EscapeDataString(Environment.MachineName);}
     RemoteViewer(string address,Dictionary<string,object> health){
         host=address;client=LoadSetting("client","");Guid id;if(!Guid.TryParse(client,out id)){client=Guid.NewGuid().ToString("N");Save("client",client);}
-        Text="PocketCoder · 원격 PC · Ctrl+Alt+Shift+Q로 조작 해제";BackColor=Color.Black;ClientSize=new Size(1280,720);MinimumSize=new Size(640,360);
+        AutoScaleMode=AutoScaleMode.None;Font=new Font("Malgun Gothic",10);Text="PocketCoder · 원격 PC · Ctrl+Alt+Shift+Q로 조작 해제";BackColor=Color.Black;ClientSize=new Size(1280,720);MinimumSize=new Size(640,360);
         canvas.Dock=DockStyle.Fill;canvas.BackColor=Color.Black;Controls.Add(canvas);
-        bar.BackColor=Color.FromArgb(235,240,245);bar.Height=42;bar.Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right;bar.Width=ClientSize.Width;bar.WrapContents=false;bar.AutoScroll=true;Controls.Add(bar);bar.BringToFront();
-        state.AutoSize=true;state.Padding=new Padding(4,10,4,0);bar.Controls.Add(state);
-        claim.Text="조작 시작 / 가져오기";claim.Width=145;claim.Height=34;claim.Click+=async delegate{armed=true;await Control("claim");};bar.Controls.Add(claim);
+        bar.BackColor=Color.FromArgb(235,240,245);bar.Height=FixedDpiLayout.Px(54);bar.Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right;bar.Width=ClientSize.Width;bar.WrapContents=false;bar.AutoScroll=true;Controls.Add(bar);bar.BringToFront();
+        state.AutoSize=true;state.Padding=new Padding(FixedDpiLayout.Px(4),FixedDpiLayout.Px(10),FixedDpiLayout.Px(4),0);bar.Controls.Add(state);
+        claim.Text="조작 시작 / 가져오기";claim.AutoSize=true;claim.MinimumSize=new Size(FixedDpiLayout.Px(145),FixedDpiLayout.Px(34));claim.Click+=async delegate{armed=true;await Control("claim");};bar.Controls.Add(claim);
         int count=Convert.ToInt32(health["displays"]);for(int i=0;i<count;i++){int index=i;Add("모니터 "+(i+1),async delegate{if(!mine)return;ReleaseHeld();try{var result=await Task.Run(()=>ReadJson(host,"/display","client="+client+"&index="+index));display=Convert.ToInt32(result["display"]);revision=Convert.ToInt64(result["displayRevision"]);Interlocked.Increment(ref generation);StopProcess(ref player);}catch(Exception e){state.Text=e.Message;}});}
         Add("창 / 전체",delegate{full=!full;ApplyWindow();});Add("소리 켬 / 끔",delegate{sound=!sound;StopProcess(ref audio);if(sound)Task.Run((Action)AudioLoop);});Add("연결 종료",delegate{Close();});
         display=Convert.ToInt32(health["display"]);revision=Convert.ToInt64(health["displayRevision"]);
         keyboardProc=Keyboard;mouseProc=Mouse;Shown+=async delegate{ApplyWindow();await Control("join");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)AudioLoop);timer.Start();};
         resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped){Interlocked.Increment(ref generation);StopProcess(ref player);}};
-        timer.Interval=1000;timer.Tick+=async delegate{var pointer=PointToClient(Cursor.Position);bar.Visible=!mine||pointer.Y<48;await Poll();};
+        timer.Interval=1000;timer.Tick+=async delegate{var pointer=PointToClient(Cursor.Position);bar.Visible=!mine||pointer.Y<bar.Height+FixedDpiLayout.Px(6);await Poll();};
         Deactivate+=delegate{SuspendInput();};Activated+=delegate{if(mine&&armed)InstallHooks();};
         FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();Unhook();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
     }
-    void Add(string text,EventHandler click){var b=new Button{Text=text,Height=34,AutoSize=true};b.Click+=click;bar.Controls.Add(b);}
+    void Add(string text,EventHandler click){var b=new Button{Text=text,Height=FixedDpiLayout.Px(34),AutoSize=true,Padding=new Padding(FixedDpiLayout.Px(6))};b.Click+=click;bar.Controls.Add(b);}
     void ApplyWindow(){FormBorderStyle=full?FormBorderStyle.None:FormBorderStyle.Sizable;WindowState=full?FormWindowState.Maximized:FormWindowState.Normal;}
     async Task Control(string action){try{var s=await Task.Run(()=>ReadJson(host,"/control",Fields(action)));SetControl(Convert.ToBoolean(s["mine"]));}catch(Exception e){state.Text=e.Message;SuspendInput();}}
     void SetControl(bool value){if(mine&&!value)SuspendInput();mine=value;state.Text=mine?"조작 중 · Ctrl+Alt+Shift+Q 탈출":"보기 전용";if(mine&&armed&&ContainsFocus)InstallHooks();}
@@ -143,7 +143,7 @@ class RemoteViewer : Form {
     void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;try{int gen=generation;r=StreamRequest("/video?fps=60&quality=native&mbps=60");using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50435631)throw new IOException("잘못된 영상 헤더");width=Int(input);height=Int(input);int fps=Int(input);if(width<1||width>16384||height<1||height>16384||fps<1||fps>240)throw new IOException("잘못된 영상 크기");
         Size target=Size.Empty;Invoke((Action)delegate{target=canvas.ClientSize;});p=Play((hardware?"-hwaccel d3d11va ":"")+"-loglevel error -noborder -x "+target.Width+" -y "+target.Height+" -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -sync ext -f h264 -i pipe:0");player=p;
-        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);SetWindowLong(embedded.MainWindowHandle,-16,0x50000000);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();});break;}Thread.Sleep(50);}});
+        Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited)return;videoWindow=embedded.MainWindowHandle;SetParent(videoWindow,canvas.Handle);EnableWindow(videoWindow,false);SetWindowLong(embedded.MainWindowHandle,-16,0x50000000);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();});break;}Thread.Sleep(50);}});
         while(!stopped&&gen==generation){int size=Int(input);Bytes(input,8);if(size<1||size>8388608)throw new IOException("영상 패킷 크기 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,b.Length);p.StandardInput.BaseStream.Flush();}
     }}catch(Exception e){if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0)hardware=false;if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;}if(!stopped)Thread.Sleep(300);}}
     void AudioLoop(){HttpWebRequest r=null;Process p=null;try{r=StreamRequest("/audio");using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
@@ -160,8 +160,31 @@ class RemoteViewer : Form {
     [DllImport("user32.dll")]static extern IntPtr CallNextHookEx(IntPtr hook,int code,IntPtr message,IntPtr data);
     [DllImport("user32.dll")]static extern IntPtr GetForegroundWindow();
     [DllImport("kernel32.dll",CharSet=CharSet.Auto)]static extern IntPtr GetModuleHandle(string name);
+    [DllImport("user32.dll")]static extern bool EnableWindow(IntPtr window,bool enabled);
     [DllImport("user32.dll")]static extern IntPtr SetParent(IntPtr child,IntPtr parent);
     [DllImport("user32.dll")]static extern int SetWindowLong(IntPtr handle,int index,int value);
     [DllImport("user32.dll")]static extern bool MoveWindow(IntPtr handle,int x,int y,int w,int h,bool repaint);
     [DllImport("user32.dll")]static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
+}
+
+// WinForms point fonts already follow the system DPI. Scale the fixed 96-DPI rectangles
+// once as well; leaving 96-DPI button widths beside enlarged fonts clips Korean captions.
+internal static class FixedDpiLayout {
+    internal static float Factor {get{using(var g=Graphics.FromHwnd(IntPtr.Zero))return Math.Max(1f,g.DpiX/96f);}}
+    internal static int Px(int value){return (int)Math.Round(value*Factor);}
+    internal static void Apply(Form form,float preview){
+        float actual=Factor,scale=preview>0?preview:actual;Size baseSize=form.ClientSize;
+        var controls=new List<Control>();var bounds=new List<Rectangle>();var fonts=new List<Font>();
+        foreach(Control c in form.Controls){controls.Add(c);bounds.Add(c.Bounds);fonts.Add(c.Font);}
+        form.SuspendLayout();form.AutoScaleMode=AutoScaleMode.None;
+        for(int i=0;i<controls.Count;i++){var c=controls[i];var b=bounds[i];
+            if(preview>0)c.Font=new Font(fonts[i].FontFamily,fonts[i].Size*scale/actual,fonts[i].Style);
+            c.Bounds=new Rectangle((int)Math.Round(b.X*scale),(int)Math.Round(b.Y*scale),(int)Math.Round(b.Width*scale),(int)Math.Round(b.Height*scale));
+        }
+        Size desired=new Size((int)Math.Round(baseSize.Width*scale),(int)Math.Round(baseSize.Height*scale));
+        var work=Screen.FromControl(form).WorkingArea;
+        form.AutoScroll=true;form.AutoScrollMinSize=desired;
+        form.ClientSize=new Size(Math.Min(desired.Width,Math.Max(360,work.Width-40)),Math.Min(desired.Height,Math.Max(240,work.Height-100)));
+        form.ResumeLayout(true);
+    }
 }

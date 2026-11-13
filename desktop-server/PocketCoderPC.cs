@@ -19,10 +19,11 @@ class PocketCoderPC : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly JavaScriptSerializer json=new JavaScriptSerializer();
     readonly NotifyIcon tray=new NotifyIcon();
-    string ip,version="0.8.0"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
+    string ip,version="0.8.1"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
     static string Hash(string value) { using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-","").ToLowerInvariant().Substring(0,16); }
     string Instance { get { return Hash(Path.GetFullPath(Path.Combine(root,"pocketcoder-server.jar")).ToLowerInvariant()); } }
-    PocketCoderPC() {
+    PocketCoderPC(float previewScale=0) {
+        AutoScaleMode=AutoScaleMode.None;
         Text="PocketCoder PC"; ClientSize=new Size(760,440); StartPosition=FormStartPosition.CenterScreen;
         FormBorderStyle=FormBorderStyle.FixedDialog; MaximizeBox=false; Font=new Font("Malgun Gothic",10);
         var title=AddLabel("PocketCoder 원격 연결",20,18,710,34); title.Font=new Font(Font.FontFamily,16,FontStyle.Bold);
@@ -50,12 +51,21 @@ class PocketCoderPC : Form {
         menu.Items.Add("업데이트 확인",null,async delegate{await CheckUpdates(true);});menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("프로그램만 끝내기 · 서버 유지",null,delegate{exitRequested=true;Close();});
         menu.Items.Add("서버 종료 후 끝내기",null,async delegate{await Act("Stop");exitRequested=true;Close();});
-        tray.Icon=SystemIcons.Application;tray.Text="PocketCoder PC";tray.ContextMenuStrip=menu;tray.Visible=true;tray.DoubleClick+=delegate{ShowWindow();};
+        tray.Icon=SystemIcons.Application;tray.Text="PocketCoder PC";tray.ContextMenuStrip=menu;tray.Visible=previewScale==0;tray.DoubleClick+=delegate{ShowWindow();};
         Resize+=delegate{if(WindowState==FormWindowState.Minimized)Hide();};
         FormClosing+=delegate(object sender,FormClosingEventArgs e){if(!exitRequested&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
         timer.Interval=3000;timer.Tick+=async delegate{await RefreshStatus();};
-        Shown+=async delegate{await Initialize();timer.Start();await CheckUpdates(false);};
+        if(previewScale==0)Shown+=async delegate{await Initialize();timer.Start();await CheckUpdates(false);};
+        FixedDpiLayout.Apply(this,previewScale);
         FormClosed+=delegate{RemoteViewer.Shutdown();timer.Stop();timer.Dispose();tray.Visible=false;tray.Dispose();if(qr.Image!=null)qr.Image.Dispose();};
+    }
+    static void LayoutSelfTest(){
+        foreach(float scale in new[]{1f,1.25f,1.5f,1.75f,2f,2.5f})using(var form=new PocketCoderPC(scale)){
+            foreach(Control c in form.Controls){
+                if(c is Button){var text=TextRenderer.MeasureText(c.Text,c.Font);if(c.Width<text.Width+8||c.Height<text.Height+6)throw new Exception("Button clipped at "+scale+": "+c.Text);}
+                if(c is Label&&!String.IsNullOrEmpty(c.Text)){var measured=TextRenderer.MeasureText(c.Text,c.Font,new Size(c.Width,10000),TextFormatFlags.WordBreak);if(c.Height<measured.Height)throw new Exception("Label clipped at "+scale+": "+c.Text);}
+            }
+        }
     }
     void ShowWindow(){Show();WindowState=FormWindowState.Normal;Activate();}
     Label AddLabel(string text,int x,int y,int w,int h){var l=new Label();SetupLabel(l,text,x,y,w,h);return l;}
@@ -154,7 +164,7 @@ class PocketCoderPC : Form {
         }catch(Exception e){updateLabel.Text="업데이트 실패: "+e.Message;MessageBox.Show(this,"업데이트 실패: "+e.Message,"PocketCoder");}
     }
     [STAThread]static void Main(string[] args){
-        if(args.Length==1&&args[0]=="--viewer-self-test"){RemoteViewer.SelfTest();return;}
+        if(args.Length==1&&args[0]=="--viewer-self-test"){try{RemoteViewer.SelfTest();LayoutSelfTest();}catch(Exception e){Console.Error.WriteLine(e);Environment.ExitCode=1;}return;}
         // GitHub requires TLS 1.2; .NET Framework builds without a target-framework attribute default to older protocols.
         ServicePointManager.SecurityProtocol|=(SecurityProtocolType)3072;
         string eventName="Local\\PocketCoderExit-"+Hash(AppDomain.CurrentDomain.BaseDirectory.ToLowerInvariant());
@@ -164,7 +174,8 @@ class PocketCoderPC : Form {
         RemoteViewer.EnableDpi();
         Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
         using(var signal=new EventWaitHandle(false,EventResetMode.AutoReset,eventName)) {
-            var form=new PocketCoderPC();
+            float preview=0;if(args.Length==1&&args[0].StartsWith("--ui-preview="))float.TryParse(args[0].Substring(13),out preview);
+            var form=new PocketCoderPC(preview);
             var registration=ThreadPool.RegisterWaitForSingleObject(signal,delegate { if(!form.IsDisposed&&form.IsHandleCreated)form.BeginInvoke((Action)delegate{form.exitRequested=true;form.Close();}); },null,-1,true);
             Application.Run(form);
             registration.Unregister(null);
