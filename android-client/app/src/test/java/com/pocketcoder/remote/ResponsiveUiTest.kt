@@ -144,8 +144,7 @@ class ResponsiveUiTest {
     @Test fun monitorChangeClearsTheOldFrameAndMjpegMarginsAreOpaque() {
         val view = RemoteScreenView(org.robolectric.RuntimeEnvironment.getApplication()) { _, _ -> }
         measure(view, 360, 600)
-        val texture = view.getChildAt(0)
-        texture.setBackgroundColor(Color.RED) // Stand in for the previous landscape video texture.
+        view.setBackgroundColor(Color.RED) // Any transparent letterbox would expose stale content underneath.
         view.show(Bitmap.createBitmap(1920, 1080, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GREEN) })
         view.zoom = 3f
         view.beginDisplaySwitch()

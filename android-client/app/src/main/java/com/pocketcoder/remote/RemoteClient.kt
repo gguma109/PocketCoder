@@ -260,8 +260,8 @@ class RemoteClient(
     fun selectDisplay(index: Int) {
         val current = session ?: return
         if (!active || (index == current.selectedDisplay && !current.switching)) return
-        val generation = current.videoGeneration.incrementAndGet()
         current.switching = true
+        val generation = current.videoGeneration.incrementAndGet()
         pendingFrame.getAndSet(null)?.bitmap?.recycle()
         videoConnection.getAndSet(null)?.close()
         frameConnection.getAndSet(null)?.let { c -> closeWorker.execute { c.disconnect() } }
@@ -279,7 +279,7 @@ class RemoteClient(
                 c.inputStream.use { it.readBytes() }
                 if (isCurrent(current) && current.videoGeneration.get() == generation) {
                     current.selectedDisplay = index
-                    main.post { if (isCurrent(current)) onDisplays(current.displayCount, index) }
+                    main.post { if (isCurrent(current) && current.videoGeneration.get() == generation) onDisplays(current.displayCount, index) }
                 }
             } catch (e: Exception) { state(current, true, e.message ?: "모니터 변경 실패") }
             finally {
