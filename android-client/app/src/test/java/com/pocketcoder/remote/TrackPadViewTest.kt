@@ -35,6 +35,21 @@ class TrackPadViewTest {
         assertTrue(moves.all { it.first > 0 && it.second == 0 })
     }
 
+    @Test fun dragReleasesTheLeftButtonOnCancelAndNeverTurnsIntoATap() {
+        val buttons = mutableListOf<Boolean>()
+        var clicks = 0
+        val pad = TrackPadView(org.robolectric.RuntimeEnvironment.getApplication(), { _, _ -> }, { clicks++ }, {}, { buttons += it })
+        pad.dragMode = true
+        fun event(action: Int, x: Float, time: Long) {
+            val e = MotionEvent.obtain(0, time, action, x, 40f, 0); pad.onTouchEvent(e); e.recycle()
+        }
+        event(MotionEvent.ACTION_DOWN, 30f, 0)
+        event(MotionEvent.ACTION_MOVE, 80f, 10)
+        event(MotionEvent.ACTION_CANCEL, 80f, 20)
+        assertEquals(listOf(true, false), buttons)
+        assertEquals(0, clicks)
+    }
+
     @Test fun verticalPadDragKeepsMovingMouseWithoutScrollingPage() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         try {

@@ -12,10 +12,11 @@ internal class VideoHub(private val encoder: VideoEncoder) : Closeable {
     internal data class Key(val bounds: Rectangle, val profile: VideoProfile)
     private val groups = mutableMapOf<Key, Group>()
     @Synchronized fun subscribe(area: Rectangle, profile: VideoProfile): Subscription {
-        val key = Key(Rectangle(area), profile)
+        val normalized = profile.copy(fps = minOf(encoder.fps, profile.fps))
+        val key = Key(Rectangle(area), normalized)
         val group = groups[key] ?: run {
             require(groups.size < 4) { "Too many active video profiles" }
-            Group(key, encoder.forProfile(profile)).also { groups[key] = it; it.start() }
+            Group(key, encoder.forProfile(normalized)).also { groups[key] = it; it.start() }
         }
         return group.add()
     }

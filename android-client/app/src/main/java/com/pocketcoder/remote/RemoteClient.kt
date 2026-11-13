@@ -116,7 +116,7 @@ class RemoteClient(
                 current.statsTask = statusWorker.scheduleAtFixedRate({ if (isCurrent(current) && active) pollStatus(current) }, 0, 1, java.util.concurrent.TimeUnit.SECONDS)
                 refreshAudio()
                 if (!legacyMode) main.post { if (isCurrent(current)) onLoginConnected(host) }
-                state(current, true, if (h264) "연결됨 · H.264 · 목표 ${targetFps}fps" else if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
+                state(current, true, if (h264) "연결됨 · H.264 · 목표 ${minOf(targetFps, profile().fps)}fps" else if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
                 val supportsH264 = h264
                 var previousGeneration = current.videoGeneration.get()
                 var failures = 0
@@ -140,7 +140,7 @@ class RemoteClient(
                                     decodedFrame.set(true)
                                     main.post { if (videoRunning()) {
                                         onVideoSize(w, h)
-                                        onState(true, "연결됨 · H.264 · 목표 ${targetFps}fps")
+                                        onState(true, "연결됨 · H.264 · 목표 ${minOf(targetFps, profile().fps)}fps")
                                     } }
                                 }, onPacket = { metrics.packet(it) }, onDecoded = { metrics.decode = it })
                             } finally { videoConnection.compareAndSet(c, null); c.close() }
@@ -351,7 +351,9 @@ class RemoteClient(
     }
     private fun updateControl(current: Session, state: JSONObject) {
         if (!isCurrent(current)) return
+        val previouslyOwned = current.canControl
         current.canControl = state.optBoolean("mine", false)
+        if (current.canControl && !previouslyOwned) metrics.inputState = "대기"
         val label = state.optString("label", "다른 기기")
         if (!current.canControl) metrics.inputState = "보기 전용"
         main.post { if (isCurrent(current)) onControl(current.canControl, label) }
@@ -371,7 +373,10 @@ class RemoteClient(
             metrics.rtt = (System.nanoTime() - started) / 1_000_000
             metrics.viewers = status.optInt("viewers", 1)
             updateDisplay(current, status.optInt("display", current.selectedDisplay), status.optLong("displayRevision", current.displayRevision))
-            if (current.controlSupported) status.optJSONObject("control")?.let { updateControl(current, it) }
+            if (current.controlSupported) status.optJSONObject("control")?.let {
+                if (!it.optBoolean("occupied", false)) updateControl(current, controlRequest(current, "join"))
+                else updateControl(current, it)
+            }
             val snapshot = metrics.snapshot()
             main.post { if (isCurrent(current)) onMetrics(snapshot) }
         } catch (_: Exception) {
