@@ -12,6 +12,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
+import com.pocketcoder.protocol.Hangul
 
 /** Kotlin-only Android remote-development console: no WebView, ads, tracking, or analytics. */
 class MainActivity : Activity() {
@@ -31,6 +32,10 @@ class MainActivity : Activity() {
     private lateinit var config: LinearLayout
     private lateinit var connectButton: TextView
     private lateinit var headerButton: TextView
+    private lateinit var monitorRow: LinearLayout
+    private lateinit var languageButton: TextView
+    private val letterButtons = mutableMapOf<String, TextView>()
+    private var koreanMode = false
     private var connected = false
     private val modifiers = linkedSetOf<String>()
     private val modifierButtons = mutableMapOf<String, TextView>()
@@ -45,7 +50,10 @@ class MainActivity : Activity() {
             onFrame = { bitmap -> runOnUiThread { screen.show(bitmap) } },
             onLoginConnected = { host ->
                 getSharedPreferences("pocketcoder", MODE_PRIVATE).edit().putString("autoAddress", host).apply()
-            }
+            },
+            videoSurface = { if (::screen.isInitialized) screen.videoSurface else null },
+            onVideoSize = { w, h -> screen.showVideo(w, h) },
+            onDisplays = { count, selected -> updateMonitors(count, selected) }
         )
         buildLayout()
         val remembered = getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("autoAddress", null)
@@ -109,6 +117,9 @@ class MainActivity : Activity() {
         connectButton = tile("PC 연결", navy, gold, -1, 44) { toggleConnection() }
         config.addView(connectButton)
         root.addView(config, bottomMargin(9))
+        monitorRow = row()
+        val monitorScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(monitorRow) }
+        root.addView(monitorScroll, bottomMargin(7))
 
         val statusRow = row().apply { gravity = Gravity.CENTER_VERTICAL }
         status = text("●  연결 안 됨", 12f, muted)
@@ -169,6 +180,12 @@ class MainActivity : Activity() {
         root.addView(padRow, bottomMargin(11))
 
         root.addView(text("DEVELOPER KEYBOARD", 10f, muted, true), bottomMargin(5))
+        val keyboardTools = row()
+        languageButton = tile("한/영 · 영문", navy, gold, 100, 36) { toggleLanguage() }
+        keyboardTools.addView(languageButton)
+        keyboardTools.addView(tile("지우기 ⌫", white, keyBg, 90, 36) { erase() }, leftMargin(5))
+        keyboardTools.addView(tile("Delete", white, keyBg, 70, 36) { pressKey("DELETE") }, leftMargin(5))
+        root.addView(keyboardTools, bottomMargin(6))
         keyboardRow(root, "1 2 3 4 5 6 7 8 9 0")
         keyboardRow(root, "Q W E R T Y U I O P")
         keyboardRow(root, "A S D F G H J K L")
@@ -193,6 +210,7 @@ class MainActivity : Activity() {
         textRow.addView(typed, LinearLayout.LayoutParams(0, dp(48), 1f))
         textRow.addView(tile("전송", navy, gold, 63, 48) { sendTyped() }, leftMargin(6))
         root.addView(textRow, bottomMargin(8))
+        root.addView(tile("입력창 비우기", white, keyBg, 120, 32) { typed.text.clear() }, bottomMargin(6))
         root.addView(text("외부 접속은 PC·휴대폰 Tailscale 연결이 필요합니다. 서버 포트를 인터넷에 직접 노출하지 마세요.", 10f, muted))
     }
 
@@ -269,12 +287,61 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             background = round(if (label == "↵") Color.rgb(195, 147, 64) else keyBg, 6)
             setOnClickListener {
+                if (koreanMode && modifiers.none { it in setOf("CTRL", "ALT", "CMD") }) {
+                    when (label) {
+                        "⌫" -> erase()
+                        "↵" -> { sendTyped(); pressKey("ENTER") }
+                        else -> {
+                            val value = if (label == "SPACE") ' ' else if (label.length == 1) Hangul.key(label[0], "SHIFT" in modifiers) ?: label[0] else null
+                            if (value != null) insertHangul(value)
+                        }
+                    }
+                    return@setOnClickListener
+                }
                 val name = when (label) { "↵" -> "ENTER"; "⌫" -> "BACKSPACE"; "SPACE" -> "SPACE"; else -> label }
                 pressKey(name)
             }
         }
         view.setPadding(dp(1), 0, dp(1), 0)
+        if (label.length == 1 && Hangul.keys.containsKey(label[0])) letterButtons[label] = view
         return view
+    }
+
+    private fun updateMonitors(count: Int, selected: Int) {
+        monitorRow.removeAllViews()
+        for (index in 0 until count.coerceIn(1, 16)) {
+            monitorRow.addView(tile("모니터 ${index + 1}", if (index == selected) navy else white,
+                if (index == selected) gold else keyBg, 94, 34) { client.selectDisplay(index) }, leftMargin(4))
+        }
+    }
+
+    private fun toggleLanguage() {
+        koreanMode = !koreanMode
+        languageButton.text = if (koreanMode) "한/영 · 한글" else "한/영 · 영문"
+        letterButtons.forEach { (letter, view) -> view.text = if (koreanMode) Hangul.key(letter[0], "SHIFT" in modifiers).toString() else letter }
+        if (koreanMode) {
+            Toast.makeText(this, "한글은 입력창에서 조합한 뒤 전송하세요", Toast.LENGTH_SHORT).show()
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
+        }
+    }
+
+    private fun insertHangul(value: Char) {
+        val start = typed.selectionStart.coerceAtLeast(0)
+        val end = typed.selectionEnd.coerceAtLeast(start)
+        val composed = Hangul.append(typed.text.substring(0, start), value)
+        typed.text.replace(0, end, composed)
+        typed.setSelection(composed.length)
+        if ("SHIFT" in modifiers) toggleModifier("SHIFT")
+    }
+
+    private fun erase() {
+        if (!koreanMode) { pressKey("BACKSPACE"); return }
+        val start = typed.selectionStart.coerceAtLeast(0)
+        val end = typed.selectionEnd.coerceAtLeast(start)
+        if (start != end) { typed.text.delete(start, end); return }
+        val composed = Hangul.backspace(typed.text.substring(0, start))
+        typed.text.replace(0, start, composed)
+        typed.setSelection(composed.length)
     }
 
     private fun entry(hint: String, password: Boolean): EditText = EditText(this).apply {

@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
+import android.view.Surface
 import com.pocketcoder.protocol.InputBuffer
 import com.pocketcoder.protocol.MjpegReader
 import org.json.JSONObject
@@ -19,9 +20,17 @@ import java.util.concurrent.atomic.AtomicReference
 class RemoteClient(
     private val onState: (Boolean, String) -> Unit,
     private val onFrame: (Bitmap) -> Unit,
-    private val onLoginConnected: (String) -> Unit = {}
+    private val onLoginConnected: (String) -> Unit = {},
+    private val videoSurface: () -> Surface? = { null },
+    private val onVideoSize: (Int, Int) -> Unit = { _, _ -> },
+    private val onDisplays: (Int, Int) -> Unit = { _, _ -> }
 ) {
-    private data class Session(val id: Int, val base: String, val token: String, val input: InputBuffer = InputBuffer())
+    private data class Session(val id: Int, val base: String, val token: String, val input: InputBuffer = InputBuffer()) {
+        @Volatile var streamInput = false
+        @Volatile var selectedDisplay = 0
+        val inputConnection = AtomicReference<HttpURLConnection?>()
+        var inputOutput: java.io.OutputStream? = null
+    }
     private data class Frame(val session: Int, val bitmap: Bitmap)
     private val main = Handler(Looper.getMainLooper())
     private val frameWorker = Executors.newSingleThreadExecutor()
@@ -46,6 +55,7 @@ class RemoteClient(
         state(current, false, "PC 접속 확인 중…")
         frameWorker.execute {
             try {
+                var h264 = false
                 val streaming = withFrameConnection(open(current, "/health")) { c ->
                     if (c.responseCode == 401 && !legacyMode) {
                         val mode = c.getHeaderField("X-PocketCoder-Auth")
@@ -59,16 +69,32 @@ class RemoteClient(
                     if (c.responseCode != 200) throw IOException("서버 인증 실패 (HTTP ${c.responseCode})")
                     val json = c.inputStream.use { JSONObject(it.bufferedReader(Charsets.UTF_8).readText()) }
                     if (!legacyMode && json.optString("auth") != "tailscale") throw IOException("Tailscale 로그인 서버 0.3.0으로 업데이트하세요")
+                    current.streamInput = json.optString("input") == "stream"
+                    h264 = json.optString("video") == "h264"
+                    val count = json.optInt("displays", 1)
+                    val selected = json.optInt("display", 0)
+                    current.selectedDisplay = selected
+                    main.post { if (isCurrent(current)) onDisplays(count, selected) }
                     json.optString("stream") == "mjpeg"
                 }
                 if (!isCurrent(current)) return@execute
                 active = true
                 if (!legacyMode) main.post { if (isCurrent(current)) onLoginConnected(host) }
-                state(current, true, if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
+                state(current, true, if (h264) "연결됨 · H.264 · 목표 30fps" else if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
                 var failures = 0
                 while (isCurrent(current) && active && !Thread.currentThread().isInterrupted) {
                     try {
-                        if (streaming) {
+                        if (h264) {
+                            val surface = videoSurface()?.takeIf { it.isValid } ?: throw IOException("화면 준비 중")
+                            withFrameConnection(open(current, "/video")) { c ->
+                                if (c.responseCode != 200) throw IOException("영상 요청 실패: ${c.responseCode}")
+                                c.inputStream.buffered(65536).use { input ->
+                                    decodeH264(input, surface, { isCurrent(current) && active }, { w, h ->
+                                        main.post { if (isCurrent(current)) onVideoSize(w, h) }
+                                    })
+                                }
+                            }
+                        } else if (streaming) {
                             withFrameConnection(open(current, "/stream")) { c ->
                                 if (c.responseCode != 200) throw IOException("스트림 요청 실패: ${c.responseCode}")
                                 if (!c.contentType.orEmpty().startsWith("multipart/x-mixed-replace")) {
@@ -94,7 +120,11 @@ class RemoteClient(
                         }
                     } catch (e: Exception) {
                         if (!isCurrent(current) || e is InterruptedException) break
-                        if (++failures >= 4) throw IOException("PC 화면 연결 끊김: ${e.message}")
+                        if (h264 && ++failures >= 3) {
+                            h264 = false; failures = 0
+                            state(current, true, "MJPEG 호환 모드 · 영상 디코더를 확인하세요")
+                        }
+                        else if (!h264 && ++failures >= 4) throw IOException("PC 화면 연결 끊김: ${e.message}")
                         Thread.sleep(450)
                     }
                 }
@@ -132,7 +162,7 @@ class RemoteClient(
     fun send(fields: Map<String, String>) {
         val current = session ?: return
         if (!active || !isCurrent(current)) return
-        if (!current.input.offer(fields)) {
+        if (!current.input.offer(fields + ("screen" to current.selectedDisplay.toString()))) {
             state(current, true, "입력 지연 · 네트워크 상태를 확인하세요")
             return
         }
@@ -144,6 +174,22 @@ class RemoteClient(
                     val encoded = next.entries.joinToString("&") {
                         "${URLEncoder.encode(it.key, "UTF-8")}=${URLEncoder.encode(it.value, "UTF-8")}"
                     }.toByteArray(Charsets.UTF_8)
+                    if (current.streamInput) {
+                        var c = current.inputConnection.get()
+                        if (c == null) {
+                            c = open(current, "/input-stream", "POST").apply {
+                                doOutput = true
+                                setChunkedStreamingMode(1024)
+                                setRequestProperty("Content-Type", "application/x-pocketcoder-input")
+                            }
+                            current.inputConnection.set(c)
+                            current.inputOutput = c.outputStream
+                        }
+                        if (!isCurrent(current)) { c.disconnect(); break }
+                        val output = current.inputOutput ?: throw IOException("입력 연결 없음")
+                        output.write(encoded); output.write(10); output.flush()
+                        continue
+                    }
                     val c = open(current, "/input", "POST")
                     try {
                         c.doOutput = true
@@ -154,6 +200,8 @@ class RemoteClient(
                         c.inputStream.use { it.readBytes() }
                     } finally { c.disconnect() }
                 } catch (e: Exception) {
+                    current.inputConnection.getAndSet(null)?.disconnect()
+                    current.inputOutput = null
                     if (isCurrent(current) && active) state(current, true, "입력 오류: ${e.message}")
                 }
             }
@@ -163,11 +211,34 @@ class RemoteClient(
     fun disconnect(silent: Boolean = false) {
         active = false
         val id = epoch.incrementAndGet()
+        val previous = session
         session = null
+        previous?.inputConnection?.getAndSet(null)?.let { connection -> closeWorker.execute { connection.disconnect() } }
         pendingFrame.getAndSet(null)?.bitmap?.recycle()
         val connection = frameConnection.getAndSet(null)
         if (connection != null) closeWorker.execute { connection.disconnect() }
         if (!silent) main.post { if (epoch.get() == id) onState(false, "연결 안 됨") }
+    }
+
+    fun selectDisplay(index: Int) {
+        val current = session ?: return
+        if (!active) return
+        inputWorker.execute {
+            if (!isCurrent(current)) return@execute
+            val c = open(current, "/display", "POST")
+            try {
+                val bytes = "index=$index".toByteArray(Charsets.UTF_8)
+                c.doOutput = true
+                c.setFixedLengthStreamingMode(bytes.size)
+                c.outputStream.use { it.write(bytes) }
+                if (c.responseCode != 200) throw IOException("모니터 변경 실패: ${c.responseCode}")
+                c.inputStream.use { it.readBytes() }
+                main.post {
+                    if (isCurrent(current)) connect(current.base.removePrefix("http://"), current.token, current.token.isNotEmpty())
+                }
+            } catch (e: Exception) { state(current, true, e.message ?: "모니터 변경 실패") }
+            finally { c.disconnect() }
+        }
     }
 
     fun shutdown() {

@@ -22,6 +22,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import com.pocketcoder.protocol.MjpegReader
 import com.pocketcoder.protocol.writeMjpegFrame
+import com.pocketcoder.protocol.*
+import java.io.DataOutputStream
+import java.util.concurrent.atomic.AtomicReference
 import javax.imageio.ImageIO
 import javax.imageio.ImageWriteParam
 import kotlin.math.max
@@ -58,7 +61,7 @@ fun main(args: Array<String>) {
     require(display < devices.size) { "Display $display not found. Displays: ${devices.size}" }
     val device = devices[display]
     val area = device.defaultConfiguration.bounds
-    val robot = Robot(device).apply { autoDelay = 8; isAutoWaitForIdle = false }
+    val robot = Robot(device).apply { autoDelay = 1; isAutoWaitForIdle = false }
     val authMode = option(args, "auth", if (isTailscaleAddress(bind)) "tailscale" else "token")
     require(authMode in listOf("tailscale", "token")) { "auth must be tailscale or token" }
     val token = if (authMode == "token") newToken() else null
@@ -70,17 +73,20 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.3.1")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.4.0")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
-    val app = DesktopController(robot, area)
+    val app = DesktopController(robot, area, devices, display)
+    val videoEncoder = VideoEncoder.detect()
+    val videoProcess = AtomicReference<Process?>()
     val server = HttpServer.create(InetSocketAddress(bind, port), 32)
     server.executor = Executors.newFixedThreadPool(8) { r -> Thread(r, "pocketcoder-http").apply { isDaemon = true } }
 
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.3.1","width":${area.width},"height":${area.height},"display":$display,"stream":"mjpeg","fps":$fps,"auth":"$authMode"}""".toByteArray())
+            val current = app.currentBounds()
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.4.0","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","input":"stream","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -91,6 +97,76 @@ fun main(args: Array<String>) {
     }
     // One viewer per desktop. A slow reader never builds an application frame queue.
     val streamSlot = Semaphore(1)
+    server.createContext("/video") { ex ->
+        guarded(ex, authorize, "GET") {
+            val encoder = videoEncoder ?: run { sendError(ex, 404, "H.264 encoder unavailable"); return@guarded }
+            if (!streamSlot.tryAcquire()) { sendError(ex, 409, "A screen stream is already active"); return@guarded }
+            var process: Process? = null
+            try {
+                val capture = app.currentBounds()
+                val startedProcess = encoder.start(capture)
+                process = startedProcess
+                videoProcess.set(startedProcess)
+                ex.responseHeaders.set("Content-Type", "application/x-pocketcoder-avc")
+                ex.sendResponseHeaders(200, 0)
+                DataOutputStream(ex.responseBody).use { output ->
+                    writeVideoHeader(output, encoder.dimensions(capture))
+                    val units = AccessUnitReader(startedProcess.inputStream.buffered(65536))
+                    var lastAuth = System.nanoTime()
+                    while (!Thread.currentThread().isInterrupted) {
+                        if (System.nanoTime() - lastAuth > 1_000_000_000L) {
+                            if (!authorize(ex)) break
+                            lastAuth = System.nanoTime()
+                        }
+                        val unit = units.next() ?: break
+                        writeVideoPacket(output, unit, System.nanoTime() / 1000)
+                    }
+                }
+            } catch (_: java.io.IOException) {
+            } finally {
+                process?.destroyForcibly()
+                videoProcess.compareAndSet(process, null)
+                streamSlot.release()
+            }
+        }
+    }
+    server.createContext("/display") { ex ->
+        guarded(ex, authorize, "POST") {
+            val bytes = ex.requestBody.use { it.readNBytes(1025) }
+            if (bytes.size > 1024) { sendError(ex, 413, "Display request too large"); return@guarded }
+            try {
+                val index = decodeForm(bytes.toString(Charsets.UTF_8))["index"]?.toIntOrNull()
+                    ?: throw IllegalArgumentException("Missing display index")
+                app.selectDisplay(index)
+                videoProcess.getAndSet(null)?.destroyForcibly()
+                send(ex, 200, "application/json", """{"ok":true,"display":$index}""".toByteArray())
+            } catch (_: IllegalArgumentException) { sendError(ex, 400, "Invalid display index") }
+        }
+    }
+    val inputSlot = Semaphore(1)
+    server.createContext("/input-stream") { ex ->
+        guarded(ex, authorize, "POST") {
+            if (!inputSlot.tryAcquire()) { sendError(ex, 409, "Input stream already active"); return@guarded }
+            try {
+                ex.requestBody.buffered(4096).use { input ->
+                    var lastAuth = System.nanoTime()
+                    while (true) {
+                        val line = readInputLine(input) ?: break
+                        if (System.nanoTime() - lastAuth > 1_000_000_000L) {
+                            if (!authorize(ex)) break
+                            lastAuth = System.nanoTime()
+                        }
+                        if (line.isNotEmpty()) {
+                            try { app.perform(decodeForm(line)) }
+                            catch (_: IllegalArgumentException) { /* Reject invalid event, preserve the stream. */ }
+                        }
+                    }
+                }
+                send(ex, 200, "application/json", """{"ok":true}""".toByteArray())
+            } catch (_: java.io.IOException) {
+            } finally { inputSlot.release() }
+        }
+    }
     server.createContext("/stream") { ex ->
         guarded(ex, authorize, "GET") {
             if (!streamSlot.tryAcquire()) { sendError(ex, 409, "A screen stream is already active"); return@guarded }
@@ -126,7 +202,7 @@ fun main(args: Array<String>) {
             }
         }
     }
-    Runtime.getRuntime().addShutdownHook(Thread { server.stop(0) })
+    Runtime.getRuntime().addShutdownHook(Thread { videoProcess.getAndSet(null)?.destroyForcibly(); server.stop(0) })
     server.start()
     println("\n=============================================")
     println(" POCKET CODER - PC server")
@@ -142,6 +218,8 @@ fun main(args: Array<String>) {
         println(" Enter IP:port and token in the Android app's LAN/legacy mode.")
     }
     println(" Stream:  MJPEG, target $fps fps (actual rate depends on CPU/network)")
+    println(" Video:   ${videoEncoder?.codec ?: "MJPEG fallback (install FFmpeg for H.264)"}")
+    println(" Monitors: ${devices.size}; switch from the Android app")
     if (isTailscaleAddress(bind)) {
         println(" Tailscale address: connect the phone to the SAME tailnet, including over LTE/5G.")
         println(" Encryption is provided by Tailscale; this server itself uses HTTP, not TLS.")
@@ -237,8 +315,18 @@ internal fun keyCode(raw: String): Int? {
     }
 }
 
-private class DesktopController(private val robot: Robot, private val bounds: Rectangle) {
+private class DesktopController(private val robot: Robot, initialBounds: Rectangle,
+    private val devices: Array<GraphicsDevice>, initialDisplay: Int) {
     private val lock = Any()
+    @Volatile private var bounds = initialBounds
+    @Volatile var selectedDisplay = initialDisplay
+        private set
+    fun currentBounds(): Rectangle = Rectangle(bounds)
+    fun selectDisplay(index: Int) = synchronized(lock) {
+        require(index in devices.indices)
+        bounds = devices[index].defaultConfiguration.bounds
+        selectedDisplay = index
+    }
     // Screen capture has its own Robot so capture cannot block mouse/keyboard input.
     private val captureRobot = Robot()
     private fun bounded(form: Map<String, String>, field: String, min: Int, max: Int): Int =
@@ -246,6 +334,7 @@ private class DesktopController(private val robot: Robot, private val bounds: Re
             .also { require(it in min..max) { "$field out of range" } }
 
     fun jpeg(): ByteArray {
+        val bounds = currentBounds()
         // Capture at most 1280x720 pixels for manageable Wi-Fi bandwidth.
         val image = captureRobot.createScreenCapture(bounds)
         val scale = min(1.0, min(1280.0 / image.width, 720.0 / image.height))
@@ -286,6 +375,8 @@ private class DesktopController(private val robot: Robot, private val bounds: Re
     }
 
     fun perform(form: Map<String, String>) = synchronized(lock) {
+        // Ignore late events from the previously selected monitor after a switch.
+        form["screen"]?.let { if (it.toIntOrNull() != selectedDisplay) return@synchronized }
         when (form["type"] ?: "") {
             "move" -> {
                 val dx = bounded(form, "dx", -2500, 2500)

@@ -12,8 +12,7 @@ class InputBuffer(private val now: () -> Long = { System.nanoTime() / 1_000_000 
         val previous = entries.peekLast()
         if (fields["type"] == "move" && previous?.fields?.get("type") == "move") {
             entries.removeLast()
-            val merged = mapOf("type" to "move", "dx" to sum(previous.fields, fields, "dx"),
-                "dy" to sum(previous.fields, fields, "dy"))
+            val merged = fields + mapOf("dx" to sum(previous.fields, fields, "dx"), "dy" to sum(previous.fields, fields, "dy"))
             entries.addLast(Entry(merged, now()))
             return true
         }
