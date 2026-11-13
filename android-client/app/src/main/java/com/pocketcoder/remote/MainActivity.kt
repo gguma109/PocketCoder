@@ -42,6 +42,9 @@ class MainActivity : Activity() {
     private lateinit var keyboardPane: LinearLayout
     private lateinit var textPane: LinearLayout
     private lateinit var composer: LinearLayout
+    private lateinit var shortcutStrip: HorizontalScrollView
+    private lateinit var clearDraftButton: TextView
+    private val compactLandscape get() = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     private val modeButtons = mutableMapOf<Int, TextView>()
     private var activeMode = 0
     private val letterButtons = mutableMapOf<String, TextView>()
@@ -93,11 +96,11 @@ class MainActivity : Activity() {
         }
         title.addView(status)
         header.addView(title, LinearLayout.LayoutParams(0, match, 1f))
-        fullscreenButton = tile("전체", white, keyBg, 48, 38) { toggleExpanded() }
+        fullscreenButton = tile("전체", white, keyBg, 48, if (compactLandscape) 32 else 38) { toggleExpanded() }
         header.addView(fullscreenButton)
-        headerButton = tile("연결", navy, gold, 58, 38) { settingsOverlay.visibility = View.VISIBLE }
-        header.addView(headerButton, LinearLayout.LayoutParams(dp(58), dp(38)).apply { leftMargin = dp(6) })
-        root.addView(header, LinearLayout.LayoutParams(match, dp(46)))
+        headerButton = tile("연결", navy, gold, 58, if (compactLandscape) 32 else 38) { settingsOverlay.visibility = View.VISIBLE }
+        header.addView(headerButton, LinearLayout.LayoutParams(dp(58), dp(if (compactLandscape) 32 else 38)).apply { leftMargin = dp(6) })
+        root.addView(header, LinearLayout.LayoutParams(match, dp(if (compactLandscape) 34 else 46)))
 
         val monitorBar = row().apply { gravity = Gravity.CENTER_VERTICAL }
         monitorRow = row()
@@ -107,7 +110,7 @@ class MainActivity : Activity() {
         monitorBar.addView(tile("−", white, keyBg, 36, 34) { screen.zoom -= .25f })
         monitorBar.addView(tile("맞춤", muted, panel, 44, 34) { screen.resetZoom() })
         monitorBar.addView(tile("+", white, keyBg, 36, 34) { screen.zoom += .25f })
-        root.addView(monitorBar, LinearLayout.LayoutParams(match, dp(40)))
+        root.addView(monitorBar, LinearLayout.LayoutParams(match, dp(if (compactLandscape) 36 else 40)))
 
         screen = RemoteScreenView(this) { x, y -> send("tap", "x" to "$x", "y" to "$y") }.apply { tag = "remoteScreen" }
         val controls = LinearLayout(this).apply {
@@ -118,9 +121,9 @@ class MainActivity : Activity() {
         listOf("마우스", "키보드", "텍스트").forEachIndexed { index, label ->
             val button = tile(label, white, keyBg, -1, 36) { selectMode(index) }
             modeButtons[index] = button
-            modes.addView(button, LinearLayout.LayoutParams(0, dp(36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
+            modes.addView(button, LinearLayout.LayoutParams(0, dp(if (compactLandscape) 28 else 36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
         }
-        controls.addView(modes, LinearLayout.LayoutParams(match, dp(40)))
+        controls.addView(modes, LinearLayout.LayoutParams(match, dp(if (compactLandscape) 32 else 38)))
         val shortcuts = row()
         listOf("ESC", "TAB", "CTRL", "ALT", "SHIFT", "CMD", "←", "↑", "↓", "→", "PG↑", "PG↓").forEach { label ->
             val width = if (label in listOf("SHIFT", "CTRL")) 54 else 44
@@ -131,8 +134,8 @@ class MainActivity : Activity() {
             if (label in listOf("CTRL", "ALT", "SHIFT", "CMD")) modifierButtons[label] = button
             shortcuts.addView(button, LinearLayout.LayoutParams(dp(width), dp(34)).apply { rightMargin = dp(4) })
         }
-        controls.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(shortcuts) },
-            LinearLayout.LayoutParams(match, dp(40)))
+        shortcutStrip = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(shortcuts) }
+        controls.addView(shortcutStrip, LinearLayout.LayoutParams(match, dp(36)))
 
         val panes = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         controlScroll = ScrollView(this).apply {
@@ -163,9 +166,9 @@ class MainActivity : Activity() {
         val eraseButton = tile("지우기 ⌫", white, keyBg, -1, 36) { erase() }
         val deleteButton = tile("Delete", white, keyBg, -1, 36) { pressKey("DELETE") }
         listOf(languageButton, eraseButton, deleteButton).forEach { button ->
-            keyboardTools.addView(button, LinearLayout.LayoutParams(0, dp(36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
+            keyboardTools.addView(button, LinearLayout.LayoutParams(0, dp(if (compactLandscape) 28 else 36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
         }
-        keyboardPane.addView(keyboardTools, LinearLayout.LayoutParams(match, dp(40)))
+        keyboardPane.addView(keyboardTools, LinearLayout.LayoutParams(match, dp(if (compactLandscape) 32 else 38)))
         keyboardRow(keyboardPane, "1 2 3 4 5 6 7 8 9 0")
         keyboardRow(keyboardPane, "Q W E R T Y U I O P")
         keyboardRow(keyboardPane, "A S D F G H J K L")
@@ -191,10 +194,12 @@ class MainActivity : Activity() {
             maxLines = 3; imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
             setPadding(dp(10), dp(6), dp(10), dp(6)); showSoftInputOnFocus = false
         }
-        composeRow.addView(typed, LinearLayout.LayoutParams(0, dp(44), 1f))
-        composeRow.addView(tile("전송", navy, gold, 52, 44) { sendTyped() }, LinearLayout.LayoutParams(dp(52), dp(44)).apply { leftMargin = dp(5) })
-        composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(48)))
-        composer.addView(tile("입력창 비우기", muted, panel, -1, 28) { typed.text.clear() })
+        val composerHeight = if (compactLandscape) 32 else 44
+        composeRow.addView(typed, LinearLayout.LayoutParams(0, dp(composerHeight), 1f))
+        composeRow.addView(tile("전송", navy, gold, 52, composerHeight) { sendTyped() }, LinearLayout.LayoutParams(dp(52), dp(composerHeight)).apply { leftMargin = dp(5) })
+        composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(composerHeight + 4)))
+        clearDraftButton = tile("입력창 비우기", muted, panel, -1, 28) { typed.text.clear() }
+        composer.addView(clearDraftButton)
         controls.addView(composer)
         workspace = RemoteWorkspace(this, screen, controls).apply { tag = "workspace" }
         root.addView(workspace, LinearLayout.LayoutParams(match, 0, 1f))
@@ -238,7 +243,9 @@ class MainActivity : Activity() {
         mousePane.visibility = if (mode == 0) View.VISIBLE else View.GONE
         keyboardPane.visibility = if (mode == 1) View.VISIBLE else View.GONE
         textPane.visibility = if (mode == 2) View.VISIBLE else View.GONE
-        composer.visibility = if (mode == 0) View.GONE else View.VISIBLE
+        composer.visibility = if (mode == 0 || (compactLandscape && mode == 1 && !koreanMode)) View.GONE else View.VISIBLE
+        clearDraftButton.visibility = if (compactLandscape && mode == 1) View.GONE else View.VISIBLE
+        shortcutStrip.visibility = if (compactLandscape && mode == 1) View.GONE else View.VISIBLE
         typed.showSoftInputOnFocus = mode == 2
         if (mode != 2) {
             (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
@@ -316,10 +323,10 @@ class MainActivity : Activity() {
             val k = key(label)
             horizontal.addView(k, weightedKeyParams(1f))
         }
-        parent.addView(horizontal, bottomMargin(4))
+        parent.addView(horizontal, bottomMargin(if (compactLandscape) 1 else 3))
     }
 
-    private fun weightedKeyParams(weight: Float) = LinearLayout.LayoutParams(0, dp(if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) 34 else 38), weight).apply {
+    private fun weightedKeyParams(weight: Float) = LinearLayout.LayoutParams(0, dp(if (compactLandscape) 28 else 36), weight).apply {
         leftMargin = dp(2); rightMargin = dp(2)
     }
 
@@ -346,7 +353,6 @@ class MainActivity : Activity() {
         view.setPadding(dp(1), 0, dp(1), 0)
         view.setSingleLine(true)
         view.includeFontPadding = false
-        view.setAutoSizeTextTypeUniformWithConfiguration(9, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
         if (label.length == 1 && Hangul.keys.containsKey(label[0])) letterButtons[label] = view
         return view
     }
@@ -368,6 +374,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "한글은 입력창에서 조합한 뒤 전송하세요", Toast.LENGTH_SHORT).show()
             (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
         }
+        selectMode(activeMode)
     }
 
     private fun insertHangul(value: Char) {
@@ -410,7 +417,7 @@ class MainActivity : Activity() {
             setSingleLine(true)
             includeFontPadding = false
             setPadding(dp(3), 0, dp(3), 0)
-            setAutoSizeTextTypeUniformWithConfiguration(9, 12, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+            ellipsize = android.text.TextUtils.TruncateAt.END
             setOnClickListener { click() }
         }
 

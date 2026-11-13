@@ -70,6 +70,7 @@ class ResponsiveUiTest {
             controls.scrollTo(0, 0)
             save(decor, "s25-keyboard")
             button(decor, "한/영 · 영문").performClick()
+            measure(decor, 360, 780)
             save(decor, "s25-korean")
             button(decor, "마우스").performClick()
             measure(decor, 360, 780)
@@ -81,7 +82,9 @@ class ResponsiveUiTest {
             save(decor, "s25-expanded")
         } finally { controller.pause().stop().destroy() }
     }
-    @Test fun landscapeHasVideoBesideControlsAndSmallWindowsStillKeepVideo() {
+    @Test
+    @Config(qualifiers = "w780dp-h360dp-land-xhdpi")
+    fun landscapeHasVideoBesideControlsAndSmallWindowsStillKeepVideo() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             val decor = controller.get().window.decorView
