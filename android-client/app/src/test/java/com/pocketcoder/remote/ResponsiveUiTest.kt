@@ -141,6 +141,33 @@ class ResponsiveUiTest {
         } finally { controller.pause().stop().destroy() }
     }
 
+    @Test fun settingsSavePerDevicePreferencesAndRemainReachableOnAPhone() {
+        val preferences = org.robolectric.RuntimeEnvironment.getApplication().getSharedPreferences("pocketcoder", 0)
+        preferences.edit().putString("quality", "balanced").putInt("videoFps", 60).putInt("mbps", 15).putBoolean("audioEnabled", false).commit()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val decor = controller.get().window.decorView
+            measure(decor, 360, 780)
+            button(decor, "연결").performClick()
+            measure(decor, 360, 780)
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            val spinners = descendants(decor).filterIsInstance<android.widget.Spinner>()
+            assertTrue(spinners[0].selectedItem.toString().startsWith("균형"))
+            assertEquals("60 FPS", spinners[1].selectedItem.toString())
+            spinners[1].setSelection(2)
+            measure(decor, 360, 780)
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertEquals(30, preferences.getInt("videoFps", 0))
+            save(decor, "settings-phone-top")
+            val scroll = decor.findViewWithTag<ScrollView>("settingsScroll")
+            scroll.fullScroll(View.FOCUS_DOWN)
+            measure(decor, 360, 780)
+            val bounds = Rect()
+            assertTrue(button(decor, "앱 0.7.0 · 업데이트 확인").getGlobalVisibleRect(bounds))
+            save(decor, "settings-phone-bottom")
+        } finally { controller.pause().stop().destroy(); preferences.edit().clear().commit() }
+    }
+
     @Test fun monitorChangeClearsTheOldFrameAndMjpegMarginsAreOpaque() {
         val view = RemoteScreenView(org.robolectric.RuntimeEnvironment.getApplication()) { _, _ -> }
         measure(view, 360, 600)

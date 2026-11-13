@@ -118,8 +118,9 @@ class PocketCoderPC : Form {
         Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
         using(var signal=new EventWaitHandle(false,EventResetMode.AutoReset,eventName)) {
             var form=new PocketCoderPC();
-            ThreadPool.RegisterWaitForSingleObject(signal,delegate { if(!form.IsDisposed&&form.IsHandleCreated)form.BeginInvoke((Action)delegate{form.exitRequested=true;form.Close();}); },null,-1,true);
+            var registration=ThreadPool.RegisterWaitForSingleObject(signal,delegate { if(!form.IsDisposed&&form.IsHandleCreated)form.BeginInvoke((Action)delegate{form.exitRequested=true;form.Close();}); },null,-1,true);
             Application.Run(form);
+            registration.Unregister(null);
         }
         mutex.ReleaseMutex();
     }}

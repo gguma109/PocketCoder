@@ -38,9 +38,21 @@ internal class AudioPlayer(private val state: (String) -> Unit) {
                         }
                         if (!running || generation.get() != ticket) { player.compareAndSet(track, null); track.release(); return@use }
                         try {
-                            track.setVolume(volume.coerceIn(0f, 1f)); track.play(); state("재생 중")
+                            val packets = java.util.concurrent.ArrayBlockingQueue<ByteArray>(8)
+                            val error = java.util.concurrent.atomic.AtomicReference<Exception?>()
+                            Thread({
+                                try {
+                                    while (running && generation.get() == ticket) {
+                                        val packet = reader.next()
+                                        if (!packets.offer(packet)) { packets.poll(); packets.offer(packet) }
+                                    }
+                                } catch (e: Exception) { error.set(e) }
+                            }, "pocketcoder-audio-receive").apply { isDaemon = true; start() }
+                            track.setVolume(volume.coerceIn(0f, 1f)); track.play()
+                            if (running && generation.get() == ticket) state("재생 중")
                             while (running && generation.get() == ticket) {
-                                val pcm = reader.next()
+                                error.get()?.let { throw it }
+                                val pcm = packets.poll(1, java.util.concurrent.TimeUnit.SECONDS) ?: continue
                                 var offset = 0
                                 while (offset < pcm.size && running && generation.get() == ticket) {
                                     track.setVolume(volume.coerceIn(0f, 1f))

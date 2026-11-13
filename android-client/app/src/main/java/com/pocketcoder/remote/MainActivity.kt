@@ -246,7 +246,7 @@ class MainActivity : Activity() {
         connectButton = tile("PC 연결", navy, gold, -1, 44) { toggleConnection() }
         config.addView(connectButton)
         addRemoteSettings()
-        settingsOverlay.addView(ScrollView(this).apply { addView(config) }, FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) })
+        settingsOverlay.addView(ScrollView(this).apply { tag = "settingsScroll"; addView(config) }, FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) })
         outer.addView(settingsOverlay, FrameLayout.LayoutParams(match, match))
         setMouseExpanded(true)
         outer.requestFocus()
