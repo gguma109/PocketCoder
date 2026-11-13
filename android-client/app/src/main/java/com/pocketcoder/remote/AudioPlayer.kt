@@ -12,7 +12,7 @@ internal class AudioPlayer(private val state: (String) -> Unit) {
     private val player = AtomicReference<AudioTrack?>()
     private var worker: Thread? = null
     @Synchronized fun start(base: String, token: String) {
-        if (running) { player.get()?.setVolume(volume); return }
+        if (running) { try { player.get()?.setVolume(volume) } catch (_: Exception) { }; return }
         running = true
         val ticket = generation.incrementAndGet()
         worker = Thread({
@@ -36,7 +36,7 @@ internal class AudioPlayer(private val state: (String) -> Unit) {
                         synchronized(this@AudioPlayer) {
                             if (running && generation.get() == ticket) player.set(track)
                         }
-                        if (!running || generation.get() != ticket) { track.release(); break }
+                        if (!running || generation.get() != ticket) { player.compareAndSet(track, null); track.release(); return@use }
                         try {
                             track.setVolume(volume.coerceIn(0f, 1f)); track.play(); state("재생 중")
                             while (running && generation.get() == ticket) {
