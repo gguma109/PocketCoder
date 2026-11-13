@@ -163,7 +163,7 @@ class ResponsiveUiTest {
             scroll.fullScroll(View.FOCUS_DOWN)
             measure(decor, 360, 780)
             val bounds = Rect()
-            assertTrue(button(decor, "앱 0.7.0 · 업데이트 확인").getGlobalVisibleRect(bounds))
+            assertTrue(button(decor, "앱 ${BuildConfig.VERSION_NAME} · 업데이트 확인").getGlobalVisibleRect(bounds))
             save(decor, "settings-phone-bottom")
         } finally { controller.pause().stop().destroy(); preferences.edit().clear().commit() }
     }
