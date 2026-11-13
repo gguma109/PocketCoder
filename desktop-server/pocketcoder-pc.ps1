@@ -1,5 +1,6 @@
-﻿param([switch]$SelfTest, [switch]$CheckOnly)
+﻿param([switch]$SelfTest, [switch]$CheckOnly, [ValidateSet("Start","Stop")][string]$Action)
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $serverRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $serverJar = Join-Path $serverRoot 'pocketcoder-server.jar'
 function Test-ServerCommand([string]$Command, [string]$Jar) {
@@ -53,7 +54,44 @@ if (Test-Path -LiteralPath $tailscale) {
     try { $ip = ((Invoke-Quiet $tailscale 'ip -4').Trim() -split '\r?\n')[0]; if ($ip -notmatch '^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') { $ip = $null } } catch { }
 }
 if ($CheckOnly) {
-    [pscustomobject]@{Java17=$javaReady;FFmpeg=[bool]$ffmpeg;TailscaleConnected=[bool]$ip;JarPresent=(Test-Path -LiteralPath $serverJar)} | ConvertTo-Json -Compress
+    [pscustomobject]@{Java17=$javaReady;FFmpeg=[bool]$ffmpeg;TailscaleConnected=[bool]$ip;Address=$ip;JarPresent=(Test-Path -LiteralPath $serverJar)} | ConvertTo-Json -Compress
+    exit 0
+}
+function Get-OwnedServer {
+    @(Get-CimInstance Win32_Process -Filter "Name='java.exe' OR Name='javaw.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        Test-ServerCommand $_.CommandLine $serverJar
+    })
+}
+if ($Action) {
+    try {
+        if ($Action -eq 'Stop') {
+            foreach ($owned in (Get-OwnedServer)) {
+                $current=Get-CimInstance Win32_Process -Filter "ProcessId=$($owned.ProcessId)" -ErrorAction SilentlyContinue
+                if ($current -and (Test-ServerCommand $current.CommandLine $serverJar)) {
+                    $process=Get-Process -Id $current.ProcessId -ErrorAction SilentlyContinue
+                    if ($process) { $process.Kill(); $process.WaitForExit(3000) | Out-Null }
+                }
+            }
+            @{ok=$true;message='종료됨'} | ConvertTo-Json -Compress
+        } else {
+            if (!$javaReady) { throw 'Java 17 이상을 설치한 뒤 다시 실행하세요.' }
+            if (!$ip) { throw 'PC Tailscale을 켜고 로그인한 뒤 다시 실행하세요.' }
+            if (!(Test-Path -LiteralPath $serverJar -PathType Leaf)) { throw '배포 ZIP 전체를 같은 폴더에 압축 해제하세요.' }
+            if ((Get-OwnedServer).Count -eq 0) {
+                $logRoot=Join-Path $env:LOCALAPPDATA 'PocketCoder\logs'
+                [IO.Directory]::CreateDirectory($logRoot) | Out-Null
+                $stamp=[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+                $p=Start-Process -FilePath $java -ArgumentList @('-jar',('"'+$serverJar+'"'),'--bind=tailscale','--port=8765') -WorkingDirectory $serverRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot "server-$stamp.log") -RedirectStandardError (Join-Path $logRoot "server-$stamp-error.log") -PassThru
+                for($attempt=0;$attempt -lt 24;$attempt++) {
+                    Start-Sleep -Milliseconds 500
+                    if ($p.HasExited) { throw '서버 시작 실패. 로그를 확인하세요. 방금 종료했다면 잠시 뒤 다시 시작하세요.' }
+                    try { $health=Invoke-RestMethod -Uri "http://${ip}:8765/health" -TimeoutSec 1 -UseBasicParsing; if($health.ok -and $health.auth -eq 'tailscale'){break} } catch { }
+                }
+                if (!$health -or !$health.ok) { throw '서버 시작을 확인하지 못했습니다. 로그 폴더를 확인하세요.' }
+            }
+            @{ok=$true;message='실행 중';address="${ip}:8765"} | ConvertTo-Json -Compress
+        }
+    } catch { @{ok=$false;message=$_.Exception.Message} | ConvertTo-Json -Compress; exit 1 }
     exit 0
 }
 Add-Type -AssemblyName System.Windows.Forms
@@ -62,11 +100,6 @@ Add-Type -AssemblyName System.Drawing
 $script:startedProcess = $null
 $script:startingUntil = [datetime]::MinValue
 $script:lastErrorLog = $null
-function Get-OwnedServer {
-    @(Get-CimInstance Win32_Process -Filter "Name='java.exe' OR Name='javaw.exe'" -ErrorAction SilentlyContinue | Where-Object {
-        Test-ServerCommand $_.CommandLine $serverJar
-    })
-}
 $form = New-Object Windows.Forms.Form
 $form.Text = 'PocketCoder PC'; $form.ClientSize = New-Object Drawing.Size(540,330)
 $form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false

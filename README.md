@@ -45,7 +45,9 @@ CI의 debug 서명키가 바뀌어 업데이트가 거부되면 기존 앱 삭�
 ## Windows PC 서버 실행
 
 
-간편 실행: 배포 ZIP 전체를 같은 폴더에 풀고 **PocketCoder-PC.vbs**를 더블클릭하면 한국어 PC 제어 창이 열립니다.
+간편 실행: Actions의 **pocketcoder-windows-pc** ZIP 전체를 같은 폴더에 풀고 **PocketCoder-PC.exe**를 더블클릭하면 한국어 PC 제어 창이 열립니다.
+휴대폰에는 **pocketcoder-debug-apk**를 설치합니다. 각 사용자의 PC에도 이 Windows 패키지가 필요합니다.
+EXE·pocketcoder-pc.ps1·pocketcoder-server.jar를 같은 폴더에 두세요. Windows 패키지는 .NET Framework 4.5 이상 환경에서 실행됩니다.
 `시작` / `종료` / `주소 복사` 버튼을 사용합니다. 창을 닫아도 서버는 유지되며 끄려면 `종료`를 누릅니다.
 같은 폴더의 서버만 제어하고 다른 Java 프로그램은 종료하지 않습니다. 로그는 `%LOCALAPPDATA%\PocketCoder\logs`에 저장됩니다.
 Java 17+, FFmpeg, Tailscale은 각 PC에 준비해야 하며 창에 감지 상태가 표시됩니다. Tailscale 연결 후 창을 여세요.
