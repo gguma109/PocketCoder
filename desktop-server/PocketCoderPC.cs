@@ -55,7 +55,7 @@ class PocketCoderPC : Form {
         FormClosing+=delegate(object sender,FormClosingEventArgs e){if(!exitRequested&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
         timer.Interval=3000;timer.Tick+=async delegate{await RefreshStatus();};
         Shown+=async delegate{await Initialize();timer.Start();await CheckUpdates(false);};
-        FormClosed+=delegate{timer.Stop();timer.Dispose();tray.Visible=false;tray.Dispose();if(qr.Image!=null)qr.Image.Dispose();};
+        FormClosed+=delegate{RemoteViewer.Shutdown();timer.Stop();timer.Dispose();tray.Visible=false;tray.Dispose();if(qr.Image!=null)qr.Image.Dispose();};
     }
     void ShowWindow(){Show();WindowState=FormWindowState.Normal;Activate();}
     Label AddLabel(string text,int x,int y,int w,int h){var l=new Label();SetupLabel(l,text,x,y,w,h);return l;}
@@ -161,6 +161,7 @@ class PocketCoderPC : Form {
         if(args.Length==1&&args[0]=="--prepare-update") { try { using(var existing=EventWaitHandle.OpenExisting(eventName))existing.Set();Thread.Sleep(300); } catch(WaitHandleCannotBeOpenedException){} return; }
         bool created;using(var mutex=new Mutex(true,"Local\\PocketCoderPC-"+Hash(AppDomain.CurrentDomain.BaseDirectory.ToLowerInvariant()),out created)){
         if(!created){MessageBox.Show("이미 실행 중입니다. 작업 표시줄의 트레이 아이콘을 확인하세요.","PocketCoder");return;}
+        RemoteViewer.EnableDpi();
         Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
         using(var signal=new EventWaitHandle(false,EventResetMode.AutoReset,eventName)) {
             var form=new PocketCoderPC();

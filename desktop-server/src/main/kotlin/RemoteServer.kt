@@ -427,6 +427,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
     fun currentBounds(): Rectangle = Rectangle(bounds)
     fun selectDisplay(index: Int) = synchronized(lock) {
         require(index in devices.indices)
+        releaseButtons()
         motion.clear()
         absoluteMotion = null
         bounds = devices[index].defaultConfiguration.bounds
