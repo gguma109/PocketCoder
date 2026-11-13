@@ -19,7 +19,7 @@ class PocketCoderPC : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly JavaScriptSerializer json=new JavaScriptSerializer();
     readonly NotifyIcon tray=new NotifyIcon();
-    string ip,version="0.7.2"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
+    string ip,version="0.7.3"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
     static string Hash(string value) { using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-","").ToLowerInvariant().Substring(0,16); }
     string Instance { get { return Hash(Path.GetFullPath(Path.Combine(root,"pocketcoder-server.jar")).ToLowerInvariant()); } }
     PocketCoderPC() {
@@ -63,7 +63,20 @@ class PocketCoderPC : Form {
     Dictionary<string,object> Run(string args){
         var info=new ProcessStartInfo("powershell.exe","-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \""+Path.Combine(root,"pocketcoder-pc.ps1")+"\" "+args);
         info.UseShellExecute=false;info.CreateNoWindow=true;info.RedirectStandardOutput=true;info.RedirectStandardError=true;info.StandardOutputEncoding=Encoding.UTF8;
-        using(var p=Process.Start(info)){var output=p.StandardOutput.ReadToEndAsync();var error=p.StandardError.ReadToEndAsync();if(!p.WaitForExit(45000)){p.Kill();throw new Exception("응답 시간이 초과됐습니다. 로그 폴더를 확인하세요.");}string text=output.Result.Trim();if(text.Length==0)throw new Exception("설치 파일을 다시 실행하거나 ZIP 전체를 같은 폴더에 풀어주세요.");return json.Deserialize<Dictionary<string,object>>(text);}
+        // Read line by line instead of waiting for EOF: the Java server started by "-Action Start" inherits
+        // this pipe and keeps it open, so ReadToEnd would never finish and the window stayed on "시작 중…".
+        var lines=new StringBuilder();var gotJson=new ManualResetEventSlim(false);
+        using(var p=new Process()){
+            p.StartInfo=info;
+            p.OutputDataReceived+=(sender,e)=>{if(e.Data==null)return;lock(lines)lines.AppendLine(e.Data);if(e.Data.TrimStart().StartsWith("{"))gotJson.Set();};
+            p.ErrorDataReceived+=(sender,e)=>{};
+            p.Start();p.BeginOutputReadLine();p.BeginErrorReadLine();
+            if(!gotJson.Wait(45000)){try{if(!p.HasExited)p.Kill();}catch{}throw new Exception("응답 시간이 초과됐습니다. 로그 폴더를 확인하세요.");}
+            string text;lock(lines)text=lines.ToString().Trim();
+            string result=null;foreach(var line in text.Split('\n'))if(line.Trim().StartsWith("{"))result=line.Trim();
+            if(result==null)throw new Exception("설치 파일을 다시 실행하거나 ZIP 전체를 같은 폴더에 풀어주세요.");
+            return json.Deserialize<Dictionary<string,object>>(result);
+        }
     }
     static byte[] Get(string url,int timeout){
         var request=(HttpWebRequest)WebRequest.Create(url);request.Proxy=null;request.Timeout=timeout;request.ReadWriteTimeout=timeout;request.UserAgent="PocketCoder-update-check";
