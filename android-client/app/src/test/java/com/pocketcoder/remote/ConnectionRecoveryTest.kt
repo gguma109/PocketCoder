@@ -1,8 +1,7 @@
 package com.pocketcoder.remote
 
 import android.os.Looper
-import com.sun.net.httpserver.HttpServer
-import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.time.Duration
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -18,15 +17,25 @@ import org.robolectric.annotation.Config
 class ConnectionRecoveryTest {
     @Test fun retriesAfterNetworkFailureAndResumesButRespectsManualDisconnect() {
         val attempts = Semaphore(0)
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/health") { exchange ->
-            exchange.sendResponseHeaders(503, -1); exchange.close(); attempts.release()
-        }
-        server.start()
+        val server = ServerSocket(0)
+        val accepting = Thread({
+            try {
+                while (!server.isClosed) server.accept().use { socket ->
+                    socket.soTimeout = 2000
+                    val reader = socket.getInputStream().bufferedReader()
+                    while (true) { val line = reader.readLine() ?: break; if (line.isEmpty()) break }
+                    socket.getOutputStream().apply {
+                        write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                        flush()
+                    }
+                    attempts.release()
+                }
+            } catch (_: java.net.SocketException) { }
+        }, "test-health-server").apply { isDaemon = true; start() }
         val failed = Semaphore(0)
         val client = RemoteClient({ _, message -> if (message.contains("자동 재연결")) failed.release() }, {})
         try {
-            client.connect("127.0.0.1:${server.address.port}")
+            client.connect("127.0.0.1:${server.localPort}")
             assertFalse(attempts.tryAcquire(100, TimeUnit.MILLISECONDS))
             client.resume()
             assertTrue(attempts.tryAcquire(3, TimeUnit.SECONDS))
@@ -46,6 +55,6 @@ class ConnectionRecoveryTest {
             client.resume()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
             assertFalse(attempts.tryAcquire(200, TimeUnit.MILLISECONDS))
-        } finally { client.shutdown(); server.stop(0) }
+        } finally { client.shutdown(); server.close(); accepting.join(1000) }
     }
 }
