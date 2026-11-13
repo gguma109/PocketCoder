@@ -75,8 +75,8 @@ class MainActivity : Activity() {
             background = round(panel, 13)
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        config.addView(text("PC 연결 · 같은 신뢰할 수 있는 Wi-Fi 사용", 12f, muted), bottomMargin(8))
-        address = entry("PC IP:포트 (예: 192.168.0.10:8765)", false)
+        config.addView(text("PC 연결 · Tailscale 또는 신뢰하는 LAN", 12f, muted), bottomMargin(8))
+        address = entry("PC LAN/Tailscale IP:포트", false)
         address.setText(getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("address", ""))
         config.addView(address, bottomMargin(6))
         secret = entry("PC 서버에 표시된 인증 토큰", true)
@@ -172,7 +172,7 @@ class MainActivity : Activity() {
         textRow.addView(typed, LinearLayout.LayoutParams(0, dp(48), 1f))
         textRow.addView(tile("전송", navy, gold, 63, 48) { sendTyped() }, leftMargin(6))
         root.addView(textRow, bottomMargin(8))
-        root.addView(text("※ 실험용 MVP · 암호화되지 않은 LAN 통신이므로 공용 Wi-Fi/인터넷에 노출하지 마세요.", 10f, muted))
+        root.addView(text("외부 접속은 PC·휴대폰 Tailscale 연결이 필요합니다. 서버 포트를 인터넷에 직접 노출하지 마세요.", 10f, muted))
     }
 
     private fun toggleConnection() {

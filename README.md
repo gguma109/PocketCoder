@@ -1,6 +1,7 @@
 # PocketCoder — Kotlin 원격 개발 콘솔
 
-Android에서 Windows/macOS PC 화면을 보고 마우스와 키보드를 조작하는 LAN 전용 MVP입니다.
+Android에서 Windows/macOS PC 화면을 보고 마우스와 키보드를 조작하는 MVP입니다.
+0.2.0은 Tailscale 외부 접속과 연속 MJPEG 스트리밍(기본 목표 15fps)을 지원합니다.
 원본 Kotlin UI, JPEG 화면, 트랙패드, 클릭/우클릭/더블클릭/스크롤, 개발자 키보드,
 Ctrl/Alt/Shift/Meta 조합키와 한글 붙여넣기를 유지합니다. 쉘 실행 API는 없습니다.
 
@@ -19,7 +20,8 @@ CI의 debug 서명키가 바뀌어 업데이트가 거부되면 기존 앱 삭�
 1. 같은 Actions 실행에서 pocketcoder-desktop-server Artifact를 내려받아 ZIP을 풉니다.
 2. Java/JDK 17 이상을 설치합니다. PATH의 Java 또는 Android Studio 기본 경로의 JBR을 사용합니다.
 3. pocketcoder-server.jar와 run-windows.bat를 같은 폴더에 두고 BAT를 실행합니다.
-4. 출력된 ipconfig에서 현재 Wi-Fi/이더넷의 사설 IPv4 주소를 입력합니다. 예: 192.168.0.10.
+4. 외부 접속은 `run-tailscale-windows.bat`를 사용하면 활성 Tailscale IPv4에 자동 바인딩합니다.
+   수동 실행은 ipconfig의 Tailscale IPv4 또는 사설 LAN IPv4를 입력합니다.
 5. 방화벽은 신뢰하는 개인 네트워크에만 허용합니다. 공용 네트워크에서는 허용하지 마세요.
 6. 창에 표시된 Access token을 휴대폰에 입력합니다. 재시작마다 토큰이 바뀝니다.
 7. Ctrl+C 또는 CMD 창 닫기로 서버를 종료합니다.
@@ -27,11 +29,14 @@ CI의 debug 서명키가 바뀌어 업데이트가 거부되면 기존 앱 삭�
 직접 실행: `java -jar pocketcoder-server.jar --bind=192.168.0.10 --port=8765`
 바인딩 생략 시 127.0.0.1만 사용하여 휴대폰 연결은 불가능합니다.
 서버는 wildcard(0.0.0.0) 및 공인 IPv4 바인딩을 거부합니다.
+Tailscale 주소(100.64.0.0/10)는 허용합니다. 이 대역만으로 암호화가 보장되는 것은 아니며
+실제로 두 기기가 Tailscale에 연결되어 있어야 합니다. 자세한 절차는 [외부 접속 안내](desktop-server/TAILSCALE_SETUP.md)를 보세요.
 macOS는 `sh run-macos.sh`를 실행하고 Java/터미널에 화면 기록/손쉬운 사용 권한을 허용합니다.
 
 ## 스마트폰 연결
 
-PC와 스마트폰을 같은 신뢰하는 LAN/Wi-Fi에 연결합니다. 앱에 PC IP:포트(예: 192.168.0.10:8765)와
+외부에서는 PC와 스마트폰을 같은 Tailscale 네트워크에 연결합니다(LTE/5G 가능).
+LAN 접속은 같은 신뢰하는 Wi-Fi를 사용합니다. 앱에 PC LAN/Tailscale IP:포트와
 서버 토큰을 입력하고 PC 연결을 누릅니다. 화면 탭은 해당 위치 클릭, 트랙패드는 마우스 이동,
 길게 누르기는 우클릭, 두 손가락 이동은 스크롤입니다. L/R 버튼도 사용할 수 있습니다.
 Ctrl/Alt/Shift/CMD는 다음 키 입력과 조합된 뒤 해제됩니다.
@@ -40,8 +45,8 @@ Ctrl/Alt/Shift/CMD는 다음 키 입력과 조합된 뒤 해제됩니다.
 
 ## 보안
 
-- HTTP는 암호화되지 않습니다. 신뢰할 수 있는 LAN 전용입니다. 토큰/화면/입력은 도청될 수 있습니다.
-- 공용 Wi-Fi에서 실행하지 마세요. 라우터 포트포워딩/터널로 TCP 8765를 인터넷에 노출하지 마세요.
+- 서버 HTTP 자체는 암호화되지 않습니다. 직접 통신은 신뢰하는 LAN 전용이고, 외부 접속은 Tailscale 암호화 터널을 사용합니다.
+- 직접 HTTP를 공용 Wi-Fi에서 사용하지 마세요. 포트포워딩/Funnel/공용 터널로 TCP 8765를 인터넷에 노출하지 마세요.
   사설 주소 바인딩 자체가 라우터의 포트포워딩을 막지는 않습니다.
 - 토큰은 서버 시작 시 SecureRandom 256비트로 생성하고 Bearer 헤더에만 전달합니다.
   소스에 토큰/비밀번호를 넣지 않으며 토큰을 GitHub 이슈/로그에 올리지 마세요.
@@ -58,7 +63,7 @@ Kotlin 2.0.21, AGP 8.7.3, Gradle 8.9, JDK 17, compileSdk 35, targetSdk 34, minSd
 
 ```text
 cd android-client
-gradle --no-daemon :app:assembleDebug :app:lintDebug
+gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 ```
 
 APK: android-client/app/build/outputs/apk/debug/app-debug.apk
@@ -71,7 +76,10 @@ java -jar pocketcoder-server.jar --self-test
 
 기존 build-server.sh도 kotlinc와 JDK 17 이상으로 사용 가능합니다.
 CI는 main 푸시/수동 실행 시 APK/lint와 서버 JAR/자체 테스트를 수행하고 두 Artifact를 업로드합니다.
-자체 테스트는 Unicode 폼 인코딩, 한글 1,000자, 키 매핑, 토큰 생성, 사설 바인딩 제한을 확인합니다.
+자체 테스트는 Unicode, 한글 1,000자, 키 매핑, 인증/메서드, LAN/Tailscale 주소 경계,
+실제 HTTP로 전송한 MJPEG 3프레임의 파싱/디코딩을 확인합니다.
+Android 테스트는 multipart 분할/잘못된 크기, 입력 병합/만료/순서/큐 제한과
+실제 ScrollView 안의 트랙패드 드래그가 페이지를 스크롤하지 않는 회귀 테스트를 포함합니다.
 
 ## 프로토콜
 
@@ -79,19 +87,28 @@ CI는 main 푸시/수동 실행 시 APK/lint와 서버 JAR/자체 테스트를 �
 
 | 요청 | 내용 |
 | --- | --- |
-| GET /health | JSON: ok, width, height, display |
+| GET /health | JSON: ok, width, height, display, stream, fps |
 | GET /frame | JPEG, 최대 1280×720 |
+| GET /stream | 인증된 multipart/x-mixed-replace MJPEG, 한 연결에서 연속 프레임 |
 | POST /input | UTF-8 application/x-www-form-urlencoded, 최대 32 KiB |
 
 입력 type: move(dx/dy), tap(x/y: 0..10000), click/double(button), wheel(amount),
 key(key/ctrl/alt/shift/meta), text(value). 입력은 순서대로 전송합니다.
 한글 1,000자는 URL 인코딩 후 8 KiB를 넘으므로 서버 제한을 32 KiB로 수정했습니다.
 재연결 시 이전 세션이 새 주소/토큰을 사용하지 않도록 세션별 값을 고정합니다.
+스트림은 한 번에 한 시청자만 허용하고 UI에는 최신 프레임 하나만 대기시킵니다.
+화면 캡처와 입력 Robot을 분리하고 화면에 마우스 커서를 합성합니다.
+인접 마우스 이동은 병합하며 250ms 넘게 밀린 이동을 버려 입력 지연 누적을 줄입니다.
+클릭/키/텍스트 순서는 유지하며 입력 큐는 최대 64개입니다(가득 차면 앱에 지연 경고).
+트랙패드 조작 중에는 바깥 ScrollView의 터치 가로채기를 막고 종료/취소 시 해제합니다.
 
 ## 제한 및 실기기 확인
 
 실제 PC-휴대폰 화면/마우스/키보드/한글 입력은 사용자 기기에서 최종 확인해야 합니다.
-화면은 약 2–4fps JPEG 폴링입니다. 오디오, 파일 전송, TLS는 미구현입니다.
+화면은 연속 MJPEG로 기본 목표 15fps이며 서버 `--fps=1..30`을 지원합니다. 실제 속도는 미보장입니다.
+구형 서버는 기존 약 2–4fps JPEG 폴링으로 자동 호환합니다.
+MJPEG는 H.264보다 대역폭이 큽니다. Parsec 수준의 하드웨어 영상 코덱/저지연 보장은 없으며
+오디오, 파일 전송, 서버 자체 TLS는 미구현입니다.
 확대는 중앙 기준 1–3배이며 패닝은 없습니다. 모니터 선택은 서버 --display=N 옵션을 사용합니다.
 Windows UAC/보안 데스크톱과 관리자 창 입력, 터미널 붙여넣기는 OS/앱 설정에 따라 제한됩니다.
 
@@ -99,6 +116,7 @@ Windows UAC/보안 데스크톱과 관리자 창 입력, 터미널 붙여넣기�
 
 - android-client/: Kotlin Android UI와 HTTP 클라이언트
 - desktop-server/: Kotlin/JVM 서버, 실행 스크립트, Gradle 서버 빌드 (생성 JAR은 Git 제외)
+- shared/: 클라이언트/서버가 함께 사용하는 multipart 프레이밍 및 입력 버퍼
 - .github/workflows/build-android-apk.yml: APK/서버 자동 빌드 및 Artifacts
 
 독립 작성된 MVP 예시이며 특정 상용 원격제어 앱과의 호환성을 보장하지 않습니다.

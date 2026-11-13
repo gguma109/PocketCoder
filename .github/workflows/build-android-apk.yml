@@ -6,6 +6,7 @@ on:
     paths:
       - 'android-client/**'
       - 'desktop-server/**'
+      - 'shared/**'
       - '.github/workflows/build-android-apk.yml'
 permissions:
   contents: read
@@ -32,7 +33,13 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug :app:lintDebug --stacktrace
+        run: gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --stacktrace
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-test-reports
+          path: android-client/app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
       - name: Build and verify desktop server
         run: gradle --no-daemon -p ../desktop-server serverJar selfTest --stacktrace
       - uses: actions/upload-artifact@v4
@@ -47,6 +54,8 @@ jobs:
           path: |
             desktop-server/pocketcoder-server.jar
             desktop-server/run-windows.bat
+            desktop-server/run-tailscale-windows.bat
             desktop-server/run-macos.sh
+            desktop-server/TAILSCALE_SETUP.md
           if-no-files-found: error
           retention-days: 30

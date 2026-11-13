@@ -13,7 +13,7 @@ if errorlevel 1 (
   )
 )
 echo ============================================================
-echo PocketCoder - trusted private WiFi only
+echo PocketCoder - Tailscale remote access or trusted private LAN
  echo NEVER forward TCP port 8765 on your router to the Internet.
 echo ============================================================
 if not exist "%~dp0pocketcoder-server.jar" (
@@ -21,9 +21,16 @@ if not exist "%~dp0pocketcoder-server.jar" (
   pause
   exit /b 1
 )
+if /i "%~1"=="--tailscale" (
+  "%JAVA%" -jar "%~dp0pocketcoder-server.jar" --bind=tailscale --port=8765
+  pause
+  exit /b
+)
 ipconfig
+echo For access away from home, enter the IPv4 shown under Tailscale.
+echo Both PC and phone must be connected to the same Tailscale network.
 set "BIND_ADDRESS="
-set /p "BIND_ADDRESS=Enter this PC's private LAN IPv4 address shown above: "
+set /p "BIND_ADDRESS=Enter this PC's Tailscale or private LAN IPv4 address: "
 if not defined BIND_ADDRESS exit /b 1
 "%JAVA%" -jar "%~dp0pocketcoder-server.jar" "--bind=%BIND_ADDRESS%" --port=8765
 pause

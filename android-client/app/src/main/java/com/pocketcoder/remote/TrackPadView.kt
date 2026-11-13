@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.view.MotionEvent
 import android.view.View
+import android.os.SystemClock
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -25,7 +26,6 @@ class TrackPadView(
     private var timeDown = 0L
     private var moved = false
     private var dual = false
-    private var previousTap = 0L
     private var wheelAccum = 0f
     private var previousMoveSentAt = 0L
 
@@ -50,10 +50,12 @@ class TrackPadView(
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
                 lastX = e.x; lastY = e.y
                 startX = e.x; startY = e.y
-                timeDown = System.currentTimeMillis()
+                timeDown = SystemClock.uptimeMillis()
                 moved = false; dual = false; wheelAccum = 0f
+                previousMoveSentAt = 0L
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> { dual = true; lastY = e.y; return true }
@@ -65,8 +67,9 @@ class TrackPadView(
                     if (ticks != 0) { onWheel(-ticks); wheelAccum -= ticks }
                     lastY = e.y; lastX = e.x
                 } else if (!dual) {
-                    if (System.currentTimeMillis() - previousMoveSentAt < 35) return true
-                    previousMoveSentAt = System.currentTimeMillis()
+                    if (hypot((e.x - startX).toDouble(), (e.y - startY).toDouble()) > 12) moved = true
+                    if (SystemClock.uptimeMillis() - previousMoveSentAt < 25) return true
+                    previousMoveSentAt = SystemClock.uptimeMillis()
                     val dx = ((e.x - lastX) * 2.1).roundToInt().coerceIn(-200, 200)
                     val dy = ((e.y - lastY) * 2.1).roundToInt().coerceIn(-200, 200)
                     if (hypot((e.x - startX).toDouble(), (e.y - startY).toDouble()) > 12) moved = true
@@ -76,16 +79,19 @@ class TrackPadView(
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
                 if (!moved && !dual && abs(e.x - startX) < 15 && abs(e.y - startY) < 15) {
-                    val now = System.currentTimeMillis()
-                    if (now - timeDown > 510) { onClick("right"); previousTap = 0L }
-                    else if (now - previousTap < 340) { onClick("double"); previousTap = 0L }
-                    else { onClick("left"); previousTap = now }
+                    // Each tap sends one click; the desktop detects a double tap as two clicks.
+                    onClick(if (SystemClock.uptimeMillis() - timeDown > 510) "right" else "left")
                     performClick()
                 }
                 return true
             }
-            MotionEvent.ACTION_CANCEL -> return true
+            MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                moved = true
+                return true
+            }
         }
         return true
     }
