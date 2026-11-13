@@ -14,4 +14,9 @@ class QrScannerLaunchTest {
     @Test fun scannerActivityResumesWithoutMissingClasses() {
         Robolectric.buildActivity(CaptureActivity::class.java).setup().pause().stop().destroy()
     }
+    @Test fun scannerFollowsDeviceOrientationInsteadOfForcingLandscape() {
+        val app = org.robolectric.RuntimeEnvironment.getApplication()
+        val info = app.packageManager.getActivityInfo(android.content.ComponentName(app, CaptureActivity::class.java), 0)
+        org.junit.Assert.assertEquals(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR, info.screenOrientation)
+    }
 }
