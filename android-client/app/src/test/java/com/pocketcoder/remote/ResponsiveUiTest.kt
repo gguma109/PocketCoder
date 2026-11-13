@@ -27,6 +27,7 @@ class ResponsiveUiTest {
         val w = (widthDp * density).toInt(); val h = (heightDp * density).toInt()
         root.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
         root.layout(0, 0, w, h)
+        root.viewTreeObserver.dispatchOnPreDraw()
     }
     private fun seedScreen(screen: RemoteScreenView) {
         val bitmap = Bitmap.createBitmap(1280, 720, Bitmap.Config.ARGB_8888)
@@ -41,6 +42,9 @@ class ResponsiveUiTest {
         screen.show(bitmap)
     }
     private fun save(root: View, name: String) {
+        // Match Android's pre-draw traversal after switching a previously GONE panel visible.
+        root.viewTreeObserver.dispatchOnPreDraw()
+        descendants(root).filterIsInstance<TextView>().filter { it.isShown }.forEach { it.onPreDraw() }
         val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
         root.draw(Canvas(bitmap))
         val dir = File("build/ui-previews").apply { mkdirs() }
