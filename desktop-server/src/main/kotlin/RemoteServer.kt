@@ -82,6 +82,8 @@ fun main(args: Array<String>) {
         ?: error("video-fps must be 30 or 60")
     val videoEncoder = VideoEncoder.detect(requestedVideoFps)
     val videoProcess = AtomicReference<Process?>()
+    // Apply before the JDK HTTP server reads its configuration: stream small frames immediately.
+    System.setProperty("sun.net.httpserver.nodelay", "true")
     val server = HttpServer.create(InetSocketAddress(bind, port), 32)
     server.executor = Executors.newFixedThreadPool(8) { r -> Thread(r, "pocketcoder-http").apply { isDaemon = true } }
 
