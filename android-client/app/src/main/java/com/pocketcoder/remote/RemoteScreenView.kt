@@ -31,7 +31,7 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
     private val texture = TextureView(context).apply { surfaceTextureListener = this@RemoteScreenView }
     private val bitmapView = BitmapView(context)
     var zoom: Float = 1f
-        set(value) { field = value.coerceIn(1f, 3f); updateGeometry(); bitmapView.invalidate() }
+        set(value) { field = value.coerceIn(1f, 6f); updateGeometry(); bitmapView.invalidate() }
     fun resetZoom() { panX = 0f; panY = 0f; zoom = 1f }
     init {
         setBackgroundColor(Color.rgb(11, 18, 31))

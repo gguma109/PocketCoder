@@ -73,7 +73,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.5.1")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.6.1")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -88,7 +88,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.5.1","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.6.1","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -338,9 +338,9 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
 
     fun jpeg(): ByteArray {
         val bounds = currentBounds()
-        // Capture at most 1280x720 pixels for manageable Wi-Fi bandwidth.
+        // Compatibility capture also preserves native pixels for readable text.
         val image = captureRobot.createScreenCapture(bounds)
-        val scale = min(1.0, min(1280.0 / image.width, 720.0 / image.height))
+        val scale = 1.0
         val width = max(1, (image.width * scale).roundToInt())
         val height = max(1, (image.height * scale).roundToInt())
         val resized = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
@@ -369,7 +369,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
             val params = writer.defaultWriteParam
             if (params.canWriteCompressed()) {
                 params.compressionMode = ImageWriteParam.MODE_EXPLICIT
-                params.compressionQuality = 0.65f
+                params.compressionQuality = 0.95f
             }
             writer.write(null, javax.imageio.IIOImage(resized, null, null), params)
             imageOut.close()

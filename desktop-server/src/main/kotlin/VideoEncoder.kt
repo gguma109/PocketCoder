@@ -9,7 +9,8 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
     val fps = if (codec == "h264_nvenc" && outputs.isNotEmpty()) requestedFps else 30
     val capture = if (outputs.isNotEmpty()) "dxgi" else "gdi"
     fun dimensions(area: Rectangle): VideoHeader {
-        val ratio = minOf(1.0, 1280.0 / area.width, 720.0 / area.height)
+        require(area.width in 2..8192 && area.height in 2..8192) { "Unsupported display dimensions" }
+        val ratio = 1.0 // Preserve desktop pixels; do not downscale text.
         return VideoHeader(maxOf(2, (area.width * ratio).toInt() / 2 * 2), maxOf(2, (area.height * ratio).toInt() / 2 * 2), fps)
     }
     fun start(area: Rectangle): Process {
@@ -42,9 +43,9 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
     companion object {
         private fun encodingOptions(codec: String, fps: Int): List<String> =
             listOf("-c:v", codec) + if (codec == "h264_nvenc") {
-                listOf("-preset", "p1", "-tune", "ull", "-rc", "cbr", "-b:v", "${fps * 2500 / 30}k", "-maxrate", "${fps * 2500 / 30}k", "-bufsize", "170k", "-g", "$fps", "-bf", "0")
+                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "16", "-b:v", "24000k", "-maxrate", "40000k", "-bufsize", "2000k", "-g", "$fps", "-bf", "0")
             } else {
-                listOf("-preset", "ultrafast", "-tune", "zerolatency", "-b:v", "2500k", "-maxrate", "2500k", "-bufsize", "170k", "-g", "30", "-bf", "0")
+                listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "16", "-maxrate", "40000k", "-bufsize", "2000k", "-g", "30", "-bf", "0")
             }
         fun detect(requestedFps: Int = 60): VideoEncoder? {
             if (!System.getProperty("os.name").startsWith("Windows", true)) return null
@@ -73,12 +74,14 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             val primary = Rectangle(0, 0, 1920, 1080)
             val portrait = Rectangle(1920, 0, 1080, 1920)
             val encoder = VideoEncoder("ffmpeg", "h264_nvenc", 60, mapOf(primary to DxgiOutput(0, 1), portrait to DxgiOutput(1, 4)))
-            check(encoder.dimensions(primary) == VideoHeader(1280, 720, 60))
-            check(encoder.dimensions(portrait) == VideoHeader(404, 720, 60))
+            check(encoder.dimensions(primary) == VideoHeader(1920, 1080, 60))
+            check(encoder.dimensions(portrait) == VideoHeader(1080, 1920, 60))
             val flat = encoder.command(primary).joinToString(" ")
             check(flat.contains("output_idx=0:framerate=60") && !flat.contains("hwdownload"))
             val rotated = encoder.command(portrait).joinToString(" ")
-            check(rotated.contains("width=720:height=404") && rotated.contains("transpose=cclock"))
+            check(rotated.contains("width=1920:height=1080") && rotated.contains("transpose=cclock"))
+            check(flat.contains("-cq 16") && flat.contains("-maxrate 40000k"))
+            check(encoder.dimensions(Rectangle(0, 0, 3840, 2160)) == VideoHeader(3840, 2160, 60))
             check(VideoEncoder("ffmpeg", "libx264").fps == 30)
         }
     }
