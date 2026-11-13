@@ -237,6 +237,7 @@ class MainActivity : Activity() {
 
     private fun toggleModifier(mod: String) {
         if (!modifiers.add(mod)) modifiers.remove(mod)
+        if (koreanMode) letterButtons.forEach { (letter, view) -> view.text = Hangul.key(letter[0], "SHIFT" in modifiers).toString() }
         modifierButtons.forEach { (label, view) ->
             val on = label in modifiers
             view.setTextColor(if (on) navy else white)
@@ -326,8 +327,8 @@ class MainActivity : Activity() {
     }
 
     private fun insertHangul(value: Char) {
-        val start = typed.selectionStart.coerceAtLeast(0)
-        val end = typed.selectionEnd.coerceAtLeast(start)
+        val start = minOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(0)
+        val end = maxOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(start)
         val composed = Hangul.append(typed.text.substring(0, start), value)
         typed.text.replace(0, end, composed)
         typed.setSelection(composed.length)
@@ -336,8 +337,8 @@ class MainActivity : Activity() {
 
     private fun erase() {
         if (!koreanMode) { pressKey("BACKSPACE"); return }
-        val start = typed.selectionStart.coerceAtLeast(0)
-        val end = typed.selectionEnd.coerceAtLeast(start)
+        val start = minOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(0)
+        val end = maxOf(typed.selectionStart, typed.selectionEnd).coerceAtLeast(start)
         if (start != end) { typed.text.delete(start, end); return }
         val composed = Hangul.backspace(typed.text.substring(0, start))
         typed.text.replace(0, start, composed)

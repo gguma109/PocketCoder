@@ -479,6 +479,20 @@ private fun selfTest() {
 private fun protocolSelfTest(encoded: String, expected: String) {
     val token = newToken()
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    val firstInput = java.util.concurrent.CountDownLatch(1)
+    val receivedInputs = java.util.Collections.synchronizedList(mutableListOf<String>())
+    server.createContext("/input-stream") { ex ->
+        guarded(ex, token, "POST") {
+            ex.requestBody.buffered().use { input ->
+                while (true) {
+                    val line = readInputLine(input) ?: break
+                    receivedInputs.add(line)
+                    firstInput.countDown()
+                }
+            }
+            send(ex, 200, "application/json", "{\"ok\":true}".toByteArray())
+        }
+    }
     server.createContext("/health") { ex ->
         guarded(ex, token, "GET") { send(ex, 200, "application/json", "{\"ok\":true}".toByteArray()) }
     }
@@ -523,6 +537,21 @@ private fun protocolSelfTest(encoded: String, expected: String) {
         check(request("/health", "POST", token) == 405)
         check(request("/health", "GET", token) == 200)
         check(request("/input", "POST", token, encoded) == 200)
+        val inputConnection = URL("http://127.0.0.1:${server.address.port}/input-stream").openConnection() as HttpURLConnection
+        try {
+            inputConnection.requestMethod = "POST"
+            inputConnection.doOutput = true
+            inputConnection.setChunkedStreamingMode(1024)
+            inputConnection.setRequestProperty("Authorization", "Bearer $token")
+            inputConnection.outputStream.use { output ->
+                output.write((encoded + "\n").toByteArray(Charsets.UTF_8)); output.flush()
+                check(firstInput.await(2, java.util.concurrent.TimeUnit.SECONDS)) { "Input was buffered until request end" }
+                output.write("type=key&key=DELETE\n".toByteArray()); output.flush()
+            }
+            check(inputConnection.responseCode == 200)
+            inputConnection.inputStream.use { it.readBytes() }
+            check(receivedInputs == listOf(encoded, "type=key&key=DELETE"))
+        } finally { inputConnection.disconnect() }
         check(request("/stream", "GET", null) == 401)
         val stream = URL("http://127.0.0.1:${server.address.port}/stream").openConnection() as HttpURLConnection
         try {

@@ -118,7 +118,10 @@ LAN/구형 모드 요청만 `Authorization: Bearer <실행 시 생성된 토큰>
 | GET /health | JSON: ok, width, height, display, stream, fps, auth |
 | GET /frame | JPEG, 최대 1280×720 |
 | GET /stream | 인증된 multipart/x-mixed-replace MJPEG, 한 연결에서 연속 프레임 |
+| GET /video | PCV1 헤더 및 길이/타임스탬프가 있는 Annex-B H.264 access unit |
 | POST /input | UTF-8 application/x-www-form-urlencoded, 최대 32 KiB |
+| POST /input-stream | URL 인코딩 입력을 LF로 구분하는 지속 chunked 요청, 이벤트당 최대 32 KiB |
+| POST /display | index=0..모니터수-1, 캡처/마우스 경계 동시 전환 |
 
 입력 type: move(dx/dy), tap(x/y: 0..10000), click/double(button), wheel(amount),
 key(key/ctrl/alt/shift/meta), text(value). 입력은 순서대로 전송합니다.
@@ -133,11 +136,12 @@ key(key/ctrl/alt/shift/meta), text(value). 입력은 순서대로 전송합니�
 ## 제한 및 실기기 확인
 
 실제 PC-휴대폰 화면/마우스/키보드/한글 입력은 사용자 기기에서 최종 확인해야 합니다.
-화면은 연속 MJPEG로 기본 목표 15fps이며 서버 `--fps=1..30`을 지원합니다. 실제 속도는 미보장입니다.
+Windows의 FFmpeg/NVENC 또는 libx264가 있으면 H.264 목표 30fps를 사용합니다.
+호환 화면은 MJPEG 기본 목표 15fps이며 서버 `--fps=1..30`은 MJPEG에만 적용됩니다. 실제 속도는 미보장입니다.
 구형 서버는 기존 약 2–4fps JPEG 폴링으로 자동 호환합니다.
-MJPEG는 H.264보다 대역폭이 큽니다. Parsec 수준의 하드웨어 영상 코덱/저지연 보장은 없으며
+MJPEG는 H.264보다 대역폭이 큽니다. NVENC/Android 하드웨어 디코더를 사용해도 Parsec 수준의 지연을 보장하지 않으며
 오디오, 파일 전송, 서버 자체 TLS는 미구현입니다.
-확대는 중앙 기준 1–3배이며 패닝은 없습니다. 모니터 선택은 서버 --display=N 옵션을 사용합니다.
+확대는 중앙 기준 1–3배이며 패닝은 없습니다. 앱 모니터 버튼 또는 서버 시작 시 --display=N을 사용합니다.
 Windows UAC/보안 데스크톱과 관리자 창 입력, 터미널 붙여넣기는 OS/앱 설정에 따라 제한됩니다.
 
 ## 구조
