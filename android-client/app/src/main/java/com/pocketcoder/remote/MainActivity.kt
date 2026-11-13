@@ -202,7 +202,7 @@ class MainActivity : Activity() {
         val composerHeight = if (compactLandscape) 32 else 44
         composeRow.addView(typed, LinearLayout.LayoutParams(0, dp(composerHeight), 1f))
         composeRow.addView(tile("전송", navy, gold, 52, composerHeight) { sendTyped() }, LinearLayout.LayoutParams(dp(52), dp(composerHeight)).apply { leftMargin = dp(5) })
-        composeRow.addView(tile("↵", white, keyBg, 36, composerHeight) { pressKey("ENTER") }, LinearLayout.LayoutParams(dp(36), dp(composerHeight)).apply { leftMargin = dp(4) })
+        composeRow.addView(tile("↵", white, keyBg, 36, composerHeight) { pressKey("ENTER") }.apply { textSize = 18f; contentDescription = "Enter" }, LinearLayout.LayoutParams(dp(36), dp(composerHeight)).apply { leftMargin = dp(4) })
         clearDraftButton = tile("비우기", muted, keyBg, 44, composerHeight) { typed.text.clear() }.apply { contentDescription = "입력창 비우기" }
         composeRow.addView(clearDraftButton, LinearLayout.LayoutParams(dp(44), dp(composerHeight)).apply { leftMargin = dp(4) })
         composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(composerHeight + 8)))
@@ -226,14 +226,7 @@ class MainActivity : Activity() {
         config.addView(text("PC와 휴대폰의 Tailscale에 같은 계정으로 로그인", 11f, muted), bottomMargin(10))
         address = entry("PC Tailscale IP:포트", false)
         address.setText(getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("address", ""))
-        config.addView(address, bottomMargin(8))
-        // Keep the QR action the same size as "PC 연결"; a plain bottomMargin() would reset the height to wrap_content.
-        config.addView(tile("PC QR 스캔으로 연결", navy, gold, -1, 44) {
-            com.google.zxing.integration.android.IntentIntegrator(this)
-                .setDesiredBarcodeFormats(com.google.zxing.integration.android.IntentIntegrator.QR_CODE)
-                .setPrompt("PC 제어 창의 연결 QR을 비춰주세요")
-                .setBeepEnabled(false).setOrientationLocked(false).initiateScan()
-        }, LinearLayout.LayoutParams(match, dp(44)).apply { bottomMargin = dp(8) })
+        config.addView(address, stacked(48, 4))
         secret = entry("PC 서버에 표시된 인증 토큰", true).apply {
             visibility = View.GONE; isSaveEnabled = false
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -243,9 +236,18 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, checked -> secret.visibility = if (checked) View.VISIBLE else View.GONE; if (!checked) secret.text.clear() }
         }
         config.addView(legacyMode)
-        config.addView(secret, bottomMargin(8))
-        connectButton = tile("PC 연결", navy, gold, -1, 44) { toggleConnection() }
-        config.addView(connectButton)
+        config.addView(secret, stacked(48, 8))
+        // QR scan and connect are the two ways to connect, so they share one row at the same size.
+        val connectRow = row()
+        connectRow.addView(tile("QR 스캔 연결", white, keyBg, -1, 48) {
+            com.google.zxing.integration.android.IntentIntegrator(this)
+                .setDesiredBarcodeFormats(com.google.zxing.integration.android.IntentIntegrator.QR_CODE)
+                .setPrompt("PC 제어 창의 연결 QR을 비춰주세요")
+                .setBeepEnabled(false).setOrientationLocked(false).initiateScan()
+        }.apply { textSize = 13f }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        connectButton = tile("PC 연결", navy, gold, -1, 48) { toggleConnection() }.apply { textSize = 13f }
+        connectRow.addView(connectButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
+        config.addView(connectRow, stacked(48, 0))
         addRemoteSettings()
         settingsOverlay.addView(ScrollView(this).apply { tag = "settingsScroll"; addView(config) }, FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) })
         outer.addView(settingsOverlay, FrameLayout.LayoutParams(match, match))
@@ -263,6 +265,7 @@ class MainActivity : Activity() {
             if (controlling) "이 기기가 조작 중" else "보기 전용 · 조작 중인 기기: $controllerLabel"
     }
     private fun addRemoteSettings() {
+        config.addView(View(this).apply { setBackgroundColor(keyBg) }, LinearLayout.LayoutParams(match, dp(1)).apply { topMargin = dp(18); bottomMargin = dp(14) })
         config.addView(text("기기별 영상 · 입력 · 소리", 14f, white, true), bottomMargin(6))
         fun choice(label: String, labels: List<String>, selected: Int, apply: (Int) -> Unit) {
             val line = row().apply { gravity = Gravity.CENTER_VERTICAL }
@@ -324,8 +327,8 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(match, dp(36)))
         metricsDetail = text("연결하면 실제 FPS · 왕복 지연 · 입력 상태가 표시됩니다", 11f, muted)
         config.addView(metricsDetail, bottomMargin(8))
-        config.addView(tile("조작권 가져오기", white, keyBg, -1, 40) { client.claimControl() }, bottomMargin(6))
-        config.addView(tile("앱 ${BuildConfig.VERSION_NAME} · 업데이트 확인", white, keyBg, -1, 40) { checkForUpdates(true) })
+        config.addView(tile("조작권 가져오기", white, keyBg, -1, 44) { client.claimControl() }, stacked(44, 8))
+        config.addView(tile("앱 ${BuildConfig.VERSION_NAME} · 업데이트 확인", muted, keyBg, -1, 44) { checkForUpdates(true) }, stacked(44, 0))
     }
     private fun checkForUpdates(manual: Boolean) {
         if (!manual && BuildConfig.DEBUG) return
@@ -482,6 +485,8 @@ class MainActivity : Activity() {
     }
 
     private fun row(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+    /** Fixed-height params with a bottom gap; bottomMargin() alone would collapse buttons/inputs to wrap_content. */
+    private fun stacked(heightDp: Int, bottom: Int) = LinearLayout.LayoutParams(match, dp(heightDp)).apply { bottomMargin = dp(bottom) }
     private fun bottomMargin(n: Int) = LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(n) }
     private fun leftMargin(n: Int) = LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(n) }
     private fun dp(n: Int) = (resources.displayMetrics.density * n + 0.5f).toInt()
