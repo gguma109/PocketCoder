@@ -16,7 +16,10 @@ class RemoteWorkspace(context: Context, private val remote: View, private val co
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
         val h = MeasureSpec.getSize(heightMeasureSpec)
-        sideBySide = w > h && w >= dp(600)
+        // An IME can make a portrait tablet's remaining window wider than it is tall.
+        // Only use columns when the device configuration is actually landscape.
+        sideBySide = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE &&
+            w > h && w >= dp(600)
         val controlWidth = if (expanded) 0 else if (sideBySide) minOf(dp(360), (w * .46f).toInt()) else w
         val controlHeight = if (expanded) 0 else if (sideBySide) h else minOf(dp(controlHeightDp), (h * .62f).toInt())
         controls.measure(MeasureSpec.makeMeasureSpec(controlWidth, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(controlHeight, MeasureSpec.EXACTLY))

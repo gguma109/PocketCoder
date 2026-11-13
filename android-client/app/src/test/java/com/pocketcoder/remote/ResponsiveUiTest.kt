@@ -109,6 +109,38 @@ class ResponsiveUiTest {
             save(decor, "compact-input")
         } finally { controller.pause().stop().destroy() }
     }
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun portraitTabletKeepsFullWidthVideoWhenKeyboardMakesTheWindowWide() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val decor = controller.get().window.decorView
+            measure(decor, 800, 1280)
+            val screen = decor.findViewWithTag<RemoteScreenView>("remoteScreen")
+            val deck = decor.findViewWithTag<View>("controlDeck")
+            val typed = decor.findViewWithTag<android.widget.EditText>("phoneInput")
+            seedScreen(screen)
+            typed.requestFocus(); typed.performClick()
+            typed.setText("태블릿에서도 PC 화면 전체 너비로 입력")
+            for (availableHeight in listOf(700, 560)) {
+                measure(decor, 800, availableHeight)
+                val workspace = decor.findViewWithTag<View>("workspace")
+                assertTrue("Reproduce an IME window wider than its remaining height", workspace.width > workspace.height)
+                assertEquals("IME must not turn portrait video into a narrow column", workspace.width, screen.width)
+                assertEquals(screen.width, deck.width)
+                assertEquals(screen.bottom, deck.top)
+                assertTrue(screen.height > 0)
+                val bounds = Rect(); assertTrue(typed.getGlobalVisibleRect(bounds))
+                assertEquals(typed.height, bounds.height())
+                save(decor, "tablet-portrait-ime-$availableHeight")
+            }
+            measure(decor, 800, 1280)
+            assertEquals(screen.width, deck.width)
+            assertEquals(screen.bottom, deck.top)
+            save(decor, "tablet-portrait-input")
+        } finally { controller.pause().stop().destroy() }
+    }
+
     @Test fun draggingZoomedVideoPansWithoutClickingAndFitResetsIt() {
         val view = RemoteScreenView(org.robolectric.RuntimeEnvironment.getApplication()) { _, _ -> clicks++ }
         measure(view, 360, 240)
