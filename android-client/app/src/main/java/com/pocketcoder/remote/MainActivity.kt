@@ -34,6 +34,16 @@ class MainActivity : Activity() {
     private lateinit var headerButton: TextView
     private lateinit var monitorRow: LinearLayout
     private lateinit var languageButton: TextView
+    private lateinit var workspace: RemoteWorkspace
+    private lateinit var settingsOverlay: FrameLayout
+    private lateinit var fullscreenButton: TextView
+    private lateinit var controlScroll: ScrollView
+    private lateinit var mousePane: LinearLayout
+    private lateinit var keyboardPane: LinearLayout
+    private lateinit var textPane: LinearLayout
+    private lateinit var composer: LinearLayout
+    private val modeButtons = mutableMapOf<Int, TextView>()
+    private var activeMode = 0
     private val letterButtons = mutableMapOf<String, TextView>()
     private var koreanMode = false
     private var connected = false
@@ -56,6 +66,9 @@ class MainActivity : Activity() {
             onDisplays = { count, selected -> updateMonitors(count, selected) }
         )
         buildLayout()
+        typed.setText(savedInstanceState?.getString("draft", "") ?: "")
+        if (savedInstanceState?.getBoolean("korean", false) == true) toggleLanguage()
+        selectMode(savedInstanceState?.getInt("mode", 0) ?: 0)
         val remembered = getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("autoAddress", null)
         if (!remembered.isNullOrBlank()) {
             address.setText(remembered)
@@ -64,154 +77,185 @@ class MainActivity : Activity() {
     }
 
     private fun buildLayout() {
-        val scroll = ScrollView(this).apply {
-            setBackgroundColor(navy)
-            isFillViewport = true
-            isVerticalScrollBarEnabled = false
-        }
+        val outer = FrameLayout(this).apply { tag = "appRoot"; setBackgroundColor(navy); fitsSystemWindows = true }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(14), dp(12), dp(20))
+            setPadding(dp(10), dp(4), dp(10), dp(6))
         }
-        scroll.addView(root)
-        setContentView(scroll)
+        outer.addView(root, FrameLayout.LayoutParams(match, match))
+        setContentView(outer)
 
-        val header = row()
-        val titleColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        titleColumn.addView(text("POCKET / CODER", 21f, gold, true))
-        titleColumn.addView(text("REMOTE DEVELOPMENT CONSOLE  ·  KOTLIN", 10f, muted, true))
-        header.addView(titleColumn, LinearLayout.LayoutParams(0, wrap, 1f))
-        headerButton = tile("설정", gold, panel, 72, 39) {
-            config.visibility = if (config.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        val header = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        val title = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        title.addView(text("POCKET CODER", 16f, gold, true))
+        status = text("●  연결 안 됨", 10f, muted).apply {
+            setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
         }
-        header.addView(headerButton)
-        root.addView(header, bottomMargin(10))
+        title.addView(status)
+        header.addView(title, LinearLayout.LayoutParams(0, match, 1f))
+        fullscreenButton = tile("전체", white, keyBg, 48, 38) { toggleExpanded() }
+        header.addView(fullscreenButton)
+        headerButton = tile("연결", navy, gold, 58, 38) { settingsOverlay.visibility = View.VISIBLE }
+        header.addView(headerButton, LinearLayout.LayoutParams(dp(58), dp(38)).apply { leftMargin = dp(6) })
+        root.addView(header, LinearLayout.LayoutParams(match, dp(46)))
 
+        val monitorBar = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        monitorRow = row()
+        monitorBar.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false; addView(monitorRow)
+        }, LinearLayout.LayoutParams(0, dp(38), 1f))
+        monitorBar.addView(tile("−", white, keyBg, 36, 34) { screen.zoom -= .25f })
+        monitorBar.addView(tile("맞춤", muted, panel, 44, 34) { screen.resetZoom() })
+        monitorBar.addView(tile("+", white, keyBg, 36, 34) { screen.zoom += .25f })
+        root.addView(monitorBar, LinearLayout.LayoutParams(match, dp(40)))
+
+        screen = RemoteScreenView(this) { x, y -> send("tap", "x" to "$x", "y" to "$y") }.apply { tag = "remoteScreen" }
+        val controls = LinearLayout(this).apply {
+            tag = "controlDeck"; orientation = LinearLayout.VERTICAL
+            background = round(panel, 14); setPadding(dp(6), dp(6), dp(6), dp(4))
+        }
+        val modes = row()
+        listOf("마우스", "키보드", "텍스트").forEachIndexed { index, label ->
+            val button = tile(label, white, keyBg, -1, 36) { selectMode(index) }
+            modeButtons[index] = button
+            modes.addView(button, LinearLayout.LayoutParams(0, dp(36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
+        }
+        controls.addView(modes, LinearLayout.LayoutParams(match, dp(40)))
+        val shortcuts = row()
+        listOf("ESC", "TAB", "CTRL", "ALT", "SHIFT", "CMD", "←", "↑", "↓", "→", "PG↑", "PG↓").forEach { label ->
+            val width = if (label in listOf("SHIFT", "CTRL")) 54 else 44
+            val button = tile(label, white, keyBg, width, 34) {
+                if (label in listOf("CTRL", "ALT", "SHIFT", "CMD")) toggleModifier(label)
+                else pressKey(when (label) { "←" -> "LEFT"; "↑" -> "UP"; "↓" -> "DOWN"; "→" -> "RIGHT"; "PG↑" -> "PAGEUP"; "PG↓" -> "PAGEDOWN"; else -> label })
+            }
+            if (label in listOf("CTRL", "ALT", "SHIFT", "CMD")) modifierButtons[label] = button
+            shortcuts.addView(button, LinearLayout.LayoutParams(dp(width), dp(34)).apply { rightMargin = dp(4) })
+        }
+        controls.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(shortcuts) },
+            LinearLayout.LayoutParams(match, dp(40)))
+
+        val panes = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        controlScroll = ScrollView(this).apply {
+            tag = "controlScroll"; isFillViewport = true; isVerticalScrollBarEnabled = false; addView(panes)
+        }
+        controls.addView(controlScroll, LinearLayout.LayoutParams(match, 0, 1f))
+        mousePane = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        mousePane.addView(text("탭으로 클릭 · 길게 눌러 우클릭 · 두 손가락 스크롤", 10f, muted), bottomMargin(5))
+        val padRow = row()
+        padRow.addView(TrackPadView(this,
+            onMove = { dx, dy -> send("move", "dx" to "$dx", "dy" to "$dy") },
+            onClick = { button -> send(if (button == "double") "double" else "click", "button" to if (button == "double") "left" else button) },
+            onWheel = { send("wheel", "amount" to "$it") }
+        ), LinearLayout.LayoutParams(0, dp(146), 1f))
+        val mouseButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        listOf("좌클릭", "우클릭", "스크롤 ↑", "스크롤 ↓").forEachIndexed { index, label ->
+            mouseButtons.addView(tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 68, 34) {
+                when (index) { 0 -> send("click", "button" to "left"); 1 -> send("click", "button" to "right"); 2 -> send("wheel", "amount" to "-3"); else -> send("wheel", "amount" to "3") }
+            }, LinearLayout.LayoutParams(dp(68), dp(34)).apply { bottomMargin = dp(3) })
+        }
+        padRow.addView(mouseButtons, LinearLayout.LayoutParams(dp(68), dp(146)).apply { leftMargin = dp(6) })
+        mousePane.addView(padRow)
+        panes.addView(mousePane)
+
+        keyboardPane = LinearLayout(this).apply { tag = "keyboardPane"; orientation = LinearLayout.VERTICAL }
+        val keyboardTools = row()
+        languageButton = tile("한/영 · 영문", navy, gold, -1, 36) { toggleLanguage() }
+        val eraseButton = tile("지우기 ⌫", white, keyBg, -1, 36) { erase() }
+        val deleteButton = tile("Delete", white, keyBg, -1, 36) { pressKey("DELETE") }
+        listOf(languageButton, eraseButton, deleteButton).forEach { button ->
+            keyboardTools.addView(button, LinearLayout.LayoutParams(0, dp(36), 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
+        }
+        keyboardPane.addView(keyboardTools, LinearLayout.LayoutParams(match, dp(40)))
+        keyboardRow(keyboardPane, "1 2 3 4 5 6 7 8 9 0")
+        keyboardRow(keyboardPane, "Q W E R T Y U I O P")
+        keyboardRow(keyboardPane, "A S D F G H J K L")
+        keyboardRow(keyboardPane, "Z X C V B N M , . /")
+        val last = row()
+        listOf("[" to 1f, "]" to 1f, "SPACE" to 3.8f, "'" to 1f, "⌫" to 1.4f, "↵" to 1.4f).forEach { (label, weight) -> last.addView(key(label), weightedKeyParams(weight)) }
+        keyboardPane.addView(last, bottomMargin(3))
+        panes.addView(keyboardPane)
+
+        textPane = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        textPane.addView(text("긴 명령이나 한글을 작성해 PC에 붙여넣습니다.", 12f, muted), bottomMargin(8))
+        textPane.addView(tile("휴대폰 키보드 열기", white, keyBg, -1, 42) {
+            typed.showSoftInputOnFocus = true; typed.requestFocus()
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(typed, InputMethodManager.SHOW_IMPLICIT)
+        })
+        textPane.addView(tile("PC Enter", navy, gold, -1, 38) { pressKey("ENTER") }, LinearLayout.LayoutParams(match, dp(38)).apply { topMargin = dp(8) })
+        panes.addView(textPane)
+
+        composer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "composer" }
+        val composeRow = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        typed = entry("Claude·Codex 명령 또는 한글 입력", false).apply {
+            setSingleLine(false); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            maxLines = 3; imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            setPadding(dp(10), dp(6), dp(10), dp(6)); showSoftInputOnFocus = false
+        }
+        composeRow.addView(typed, LinearLayout.LayoutParams(0, dp(44), 1f))
+        composeRow.addView(tile("전송", navy, gold, 52, 44) { sendTyped() }, LinearLayout.LayoutParams(dp(52), dp(44)).apply { leftMargin = dp(5) })
+        composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(48)))
+        composer.addView(tile("입력창 비우기", muted, panel, -1, 28) { typed.text.clear() })
+        controls.addView(composer)
+        workspace = RemoteWorkspace(this, screen, controls).apply { tag = "workspace" }
+        root.addView(workspace, LinearLayout.LayoutParams(match, 0, 1f))
+        updateMonitors(1, 0)
+
+        settingsOverlay = FrameLayout(this).apply {
+            tag = "settingsOverlay"; setBackgroundColor(Color.argb(210, 0, 0, 0)); visibility = View.GONE
+            setOnClickListener { visibility = View.GONE }
+        }
         config = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = round(panel, 13)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
+            orientation = LinearLayout.VERTICAL; background = round(panel, 16)
+            setPadding(dp(16), dp(16), dp(16), dp(16)); setOnClickListener { }
         }
-        config.addView(text("PC·휴대폰 Tailscale에 같은 계정으로 로그인하세요", 12f, muted), bottomMargin(8))
-        config.addView(text("토큰 없이 연결 · PC 주소는 처음 한 번만 입력", 11f, gold), bottomMargin(8))
+        val settingsTitle = row()
+        settingsTitle.addView(text("PC 연결 설정", 17f, white, true), LinearLayout.LayoutParams(0, dp(38), 1f))
+        settingsTitle.addView(tile("닫기", white, keyBg, 48, 34) { settingsOverlay.visibility = View.GONE })
+        config.addView(settingsTitle, bottomMargin(10))
+        config.addView(text("PC와 휴대폰의 Tailscale에 같은 계정으로 로그인", 11f, muted), bottomMargin(10))
         address = entry("PC Tailscale IP:포트", false)
         address.setText(getSharedPreferences("pocketcoder", MODE_PRIVATE).getString("address", ""))
-        config.addView(address, bottomMargin(6))
-        secret = entry("PC 서버에 표시된 인증 토큰", true)
-        secret.visibility = View.GONE
-        secret.isSaveEnabled = false
-        if (android.os.Build.VERSION.SDK_INT >= 26) {
-            secret.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        config.addView(address, bottomMargin(8))
+        secret = entry("PC 서버에 표시된 인증 토큰", true).apply {
+            visibility = View.GONE; isSaveEnabled = false
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         }
         legacyMode = CheckBox(this).apply {
-            text = "고급: LAN / 이전 서버 연결"
-            textSize = 11f
-            setTextColor(muted)
-            setOnCheckedChangeListener { _, checked ->
-                secret.visibility = if (checked) View.VISIBLE else View.GONE
-                if (!checked) secret.text.clear()
-            }
+            text = "고급: LAN / 이전 서버 연결"; textSize = 11f; setTextColor(muted)
+            setOnCheckedChangeListener { _, checked -> secret.visibility = if (checked) View.VISIBLE else View.GONE; if (!checked) secret.text.clear() }
         }
         config.addView(legacyMode)
         config.addView(secret, bottomMargin(8))
         connectButton = tile("PC 연결", navy, gold, -1, 44) { toggleConnection() }
         config.addView(connectButton)
-        root.addView(config, bottomMargin(9))
-        monitorRow = row()
-        val monitorScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(monitorRow) }
-        root.addView(monitorScroll, bottomMargin(7))
+        settingsOverlay.addView(ScrollView(this).apply { addView(config) }, FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) })
+        outer.addView(settingsOverlay, FrameLayout.LayoutParams(match, match))
+        selectMode(activeMode)
+    }
 
-        val statusRow = row().apply { gravity = Gravity.CENTER_VERTICAL }
-        status = text("●  연결 안 됨", 12f, muted)
-        statusRow.addView(status, LinearLayout.LayoutParams(0, wrap, 1f))
-        statusRow.addView(tile("−", white, keyBg, 35, 32) { screen.zoom -= 0.25f })
-        statusRow.addView(tile("+", white, keyBg, 35, 32) { screen.zoom += 0.25f }, leftMargin(5))
-        root.addView(statusRow, bottomMargin(7))
-
-        screen = RemoteScreenView(this) { x, y -> send("tap", "x" to "$x", "y" to "$y") }
-        screen.background = round(panel, 12)
-        root.addView(screen, LinearLayout.LayoutParams(match, dp(222)).apply { bottomMargin = dp(9) })
-
-        root.addView(text("SHORTCUT KEYS", 10f, muted, true), bottomMargin(5))
-        val shortcutScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val shortcutRow = row()
-        listOf("ESC", "TAB", "CTRL", "ALT", "SHIFT", "CMD", "←", "↑", "↓", "→", "PG↑", "PG↓").forEach { label ->
-            val shortcutWidth = when (label) { "SHIFT" -> 62; "CTRL", "ALT" -> 55; else -> 46 }
-            val button = tile(label, white, keyBg, shortcutWidth, 38) {
-                when (label) {
-                    "CTRL", "ALT", "SHIFT", "CMD" -> toggleModifier(label)
-                    else -> pressKey(when(label) {
-                        "←" -> "LEFT"; "→" -> "RIGHT"; "↑" -> "UP"; "↓" -> "DOWN"
-                        "PG↑" -> "PAGEUP"; "PG↓" -> "PAGEDOWN"; else -> label
-                    })
-                }
-            }
-            if (label in setOf("CTRL", "ALT", "SHIFT", "CMD")) modifierButtons[label] = button
-            shortcutRow.addView(button, LinearLayout.LayoutParams(dp(shortcutWidth), dp(38)).apply { leftMargin = dp(3) })
+    private fun selectMode(mode: Int) {
+        activeMode = mode
+        mousePane.visibility = if (mode == 0) View.VISIBLE else View.GONE
+        keyboardPane.visibility = if (mode == 1) View.VISIBLE else View.GONE
+        textPane.visibility = if (mode == 2) View.VISIBLE else View.GONE
+        composer.visibility = if (mode == 0) View.GONE else View.VISIBLE
+        typed.showSoftInputOnFocus = mode == 2
+        if (mode != 2) {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
+            typed.clearFocus()
         }
-        shortcutScroll.addView(shortcutRow)
-        root.addView(shortcutScroll, bottomMargin(10))
-
-        val padLabel = row().apply { gravity = Gravity.CENTER_VERTICAL }
-        padLabel.addView(text("MOUSE TRACKPAD", 10f, muted, true), LinearLayout.LayoutParams(0, wrap, 1f))
-        padLabel.addView(text("두 손가락 = 스크롤", 10f, muted))
-        root.addView(padLabel, bottomMargin(5))
-
-        val padRow = row()
-        val touchPad = TrackPadView(this,
-            onMove = { dx, dy -> send("move", "dx" to "$dx", "dy" to "$dy") },
-            onClick = { button ->
-                if (button == "double") send("double", "button" to "left")
-                else send("click", "button" to button)
-            },
-            onWheel = { amount -> send("wheel", "amount" to "$amount") }
-        )
-        padRow.addView(touchPad, LinearLayout.LayoutParams(0, dp(118), 1f))
-        val mouseActions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        mouseActions.addView(tile("L", navy, gold, 56, 26) { send("click", "button" to "left") },
-            LinearLayout.LayoutParams(dp(56), dp(26)).apply { bottomMargin = dp(4) })
-        mouseActions.addView(tile("R", white, keyBg, 56, 26) { send("click", "button" to "right") },
-            LinearLayout.LayoutParams(dp(56), dp(26)).apply { bottomMargin = dp(4) })
-        mouseActions.addView(tile("⇡", white, keyBg, 56, 26) { send("wheel", "amount" to "-3") },
-            LinearLayout.LayoutParams(dp(56), dp(26)).apply { bottomMargin = dp(4) })
-        mouseActions.addView(tile("⇣", white, keyBg, 56, 26) { send("wheel", "amount" to "3") },
-            LinearLayout.LayoutParams(dp(56), dp(26)))
-        padRow.addView(mouseActions, leftMargin(6))
-        root.addView(padRow, bottomMargin(11))
-
-        root.addView(text("DEVELOPER KEYBOARD", 10f, muted, true), bottomMargin(5))
-        val keyboardTools = row()
-        languageButton = tile("한/영 · 영문", navy, gold, 100, 36) { toggleLanguage() }
-        keyboardTools.addView(languageButton)
-        keyboardTools.addView(tile("지우기 ⌫", white, keyBg, 90, 36) { erase() }, leftMargin(5))
-        keyboardTools.addView(tile("Delete", white, keyBg, 70, 36) { pressKey("DELETE") }, leftMargin(5))
-        root.addView(keyboardTools, bottomMargin(6))
-        keyboardRow(root, "1 2 3 4 5 6 7 8 9 0")
-        keyboardRow(root, "Q W E R T Y U I O P")
-        keyboardRow(root, "A S D F G H J K L")
-        keyboardRow(root, "Z X C V B N M , . /")
-        val lastRow = row()
-        lastRow.addView(key("["), weightedKeyParams(1f))
-        lastRow.addView(key("]"), weightedKeyParams(1f))
-        lastRow.addView(key("SPACE"), weightedKeyParams(4f))
-        lastRow.addView(key("'"), weightedKeyParams(1f))
-        lastRow.addView(key("⌫"), weightedKeyParams(1.4f))
-        lastRow.addView(key("↵"), weightedKeyParams(1.4f))
-        root.addView(lastRow, bottomMargin(11))
-
-        root.addView(text("한글 / 여러 줄 명령 입력 (PC에 붙여넣기)", 11f, muted), bottomMargin(5))
-        val textRow = row()
-        typed = entry("Claude·Codex 명령을 여기에 입력", false).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            maxLines = 4
-            imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        modeButtons.forEach { (index, view) ->
+            view.setTextColor(if (index == mode) navy else muted)
+            view.background = round(if (index == mode) gold else keyBg, 9)
         }
-        textRow.addView(typed, LinearLayout.LayoutParams(0, dp(48), 1f))
-        textRow.addView(tile("전송", navy, gold, 63, 48) { sendTyped() }, leftMargin(6))
-        root.addView(textRow, bottomMargin(8))
-        root.addView(tile("입력창 비우기", white, keyBg, 120, 32) { typed.text.clear() }, bottomMargin(6))
-        root.addView(text("외부 접속은 PC·휴대폰 Tailscale 연결이 필요합니다. 서버 포트를 인터넷에 직접 노출하지 마세요.", 10f, muted))
+        workspace.controlHeightDp = when (mode) { 1 -> 420; 2 -> 300; else -> 280 }
+        controlScroll.scrollTo(0, 0)
+    }
+
+    private fun toggleExpanded() {
+        workspace.expanded = !workspace.expanded
+        fullscreenButton.text = if (workspace.expanded) "복귀" else "전체"
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(typed.windowToken, 0)
     }
 
     private fun toggleConnection() {
@@ -227,12 +271,8 @@ class MainActivity : Activity() {
         status.text = (if (isOnline) "●  " else "○  ") + message
         status.setTextColor(if (isOnline) gold else muted)
         connectButton.text = if (isOnline) "연결 해제" else "PC 연결"
-        headerButton.text = if (isOnline) "해제" else "설정"
-        headerButton.setOnClickListener {
-            if (connected) client.disconnect() else
-                config.visibility = if (config.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        }
-        if (isOnline) config.visibility = View.GONE else config.visibility = View.VISIBLE
+        headerButton.text = if (isOnline) "설정" else "연결"
+        if (isOnline) settingsOverlay.visibility = View.GONE
     }
 
     private fun toggleModifier(mod: String) {
@@ -279,7 +319,7 @@ class MainActivity : Activity() {
         parent.addView(horizontal, bottomMargin(4))
     }
 
-    private fun weightedKeyParams(weight: Float) = LinearLayout.LayoutParams(0, dp(42), weight).apply {
+    private fun weightedKeyParams(weight: Float) = LinearLayout.LayoutParams(0, dp(if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) 34 else 38), weight).apply {
         leftMargin = dp(2); rightMargin = dp(2)
     }
 
@@ -304,6 +344,9 @@ class MainActivity : Activity() {
             }
         }
         view.setPadding(dp(1), 0, dp(1), 0)
+        view.setSingleLine(true)
+        view.includeFontPadding = false
+        view.setAutoSizeTextTypeUniformWithConfiguration(9, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
         if (label.length == 1 && Hangul.keys.containsKey(label[0])) letterButtons[label] = view
         return view
     }
@@ -312,7 +355,8 @@ class MainActivity : Activity() {
         monitorRow.removeAllViews()
         for (index in 0 until count.coerceIn(1, 16)) {
             monitorRow.addView(tile("모니터 ${index + 1}", if (index == selected) navy else white,
-                if (index == selected) gold else keyBg, 94, 34) { client.selectDisplay(index) }, leftMargin(4))
+                if (index == selected) gold else keyBg, 86, 34) { client.selectDisplay(index) },
+                LinearLayout.LayoutParams(dp(86), dp(34)).apply { rightMargin = dp(4) })
         }
     }
 
@@ -363,6 +407,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             background = round(bg, 9)
             layoutParams = LinearLayout.LayoutParams(if (widthDp < 0) match else dp(widthDp), dp(heightDp))
+            setSingleLine(true)
+            includeFontPadding = false
+            setPadding(dp(3), 0, dp(3), 0)
+            setAutoSizeTextTypeUniformWithConfiguration(9, 12, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
             setOnClickListener { click() }
         }
 
@@ -384,6 +432,22 @@ class MainActivity : Activity() {
     private fun dp(n: Int) = (resources.displayMetrics.density * n + 0.5f).toInt()
     private val match get() = android.view.ViewGroup.LayoutParams.MATCH_PARENT
     private val wrap get() = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("draft", typed.text.toString())
+        outState.putInt("mode", activeMode)
+        outState.putBoolean("korean", koreanMode)
+        super.onSaveInstanceState(outState)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when {
+            settingsOverlay.visibility == View.VISIBLE -> settingsOverlay.visibility = View.GONE
+            workspace.expanded -> toggleExpanded()
+            else -> super.onBackPressed()
+        }
+    }
 
     override fun onDestroy() {
         client.shutdown()

@@ -37,14 +37,14 @@ class TrackPadView(
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f
         canvas.drawRoundRect(1f, 1f, w-1, h-1, 25f, 25f, paint)
-        canvas.drawCircle(w/2, h/2, h*0.29f, paint)
+        canvas.drawCircle(w/2, h/2, minOf(w, h)*0.24f, paint)
         paint.style = Paint.Style.FILL
         paint.color = Color.rgb(244, 187, 86)
-        canvas.drawCircle(w/2, h/2, h*0.085f, paint)
+        canvas.drawCircle(w/2, h/2, minOf(w, h)*0.065f, paint)
         paint.color = Color.rgb(158, 171, 192)
-        paint.textSize = h * 0.13f
+        paint.textSize = 11 * resources.displayMetrics.density
         paint.textAlign = Paint.Align.CENTER
-        canvas.drawText("TRACKPAD  ·  탭: 클릭 / 길게: 우클릭 / 두 손가락: 스크롤", w/2, h-13, paint)
+        canvas.drawText("마우스 이동", w/2, h - 12 * resources.displayMetrics.density, paint)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {

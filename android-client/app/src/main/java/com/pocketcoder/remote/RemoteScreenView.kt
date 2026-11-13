@@ -14,10 +14,25 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
     private var videoHeight = 0
     private var videoMode = false
     private var drawRect = RectF()
+    private var panX = 0f
+    private var panY = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private var downX = 0f
+    private var downY = 0f
+    private var moved = false
+    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(detector: ScaleGestureDetector): Boolean {
+            moved = true
+            zoom *= detector.scaleFactor
+            return true
+        }
+    })
     private val texture = TextureView(context).apply { surfaceTextureListener = this@RemoteScreenView }
     private val bitmapView = BitmapView(context)
     var zoom: Float = 1f
         set(value) { field = value.coerceIn(1f, 3f); updateGeometry(); bitmapView.invalidate() }
+    fun resetZoom() { panX = 0f; panY = 0f; zoom = 1f }
     init {
         setBackgroundColor(Color.rgb(11, 18, 31))
         clipChildren = true
@@ -44,15 +59,36 @@ class RemoteScreenView(context: Context, private val onTap: (Int, Int) -> Unit) 
         if (w <= 0 || h <= 0 || width <= 0 || height <= 0) return
         val scale = min(width.toFloat() / w, height.toFloat() / h) * zoom
         val sw = w * scale; val sh = h * scale
-        drawRect.set((width - sw) / 2, (height - sh) / 2, (width + sw) / 2, (height + sh) / 2)
+        val limitX = maxOf(0f, (sw - width) / 2)
+        val limitY = maxOf(0f, (sh - height) / 2)
+        panX = panX.coerceIn(-limitX, limitX); panY = panY.coerceIn(-limitY, limitY)
+        drawRect.set((width - sw) / 2 + panX, (height - sh) / 2 + panY, (width + sw) / 2 + panX, (height + sh) / 2 + panY)
         if (videoMode) texture.setTransform(Matrix().apply {
             setScale(sw / width, sh / height, width / 2f, height / 2f)
+            postTranslate(panX, panY)
         })
     }
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { super.onSizeChanged(w, h, oldw, oldh); updateGeometry() }
     override fun onInterceptTouchEvent(event: MotionEvent) = true
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_UP && drawRect.contains(event.x, event.y)) {
+        scaleDetector.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x; downY = event.y; lastX = event.x; lastY = event.y; moved = false
+                parent?.requestDisallowInterceptTouchEvent(true)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> moved = true
+            MotionEvent.ACTION_MOVE -> {
+                if (kotlin.math.abs(event.x - downX) + kotlin.math.abs(event.y - downY) > 8 * resources.displayMetrics.density) moved = true
+                if (event.pointerCount == 1 && zoom > 1 && !scaleDetector.isInProgress) {
+                    panX += event.x - lastX; panY += event.y - lastY
+                    updateGeometry(); bitmapView.invalidate()
+                }
+                lastX = event.x; lastY = event.y
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
+        }
+        if (event.actionMasked == MotionEvent.ACTION_UP && !moved && drawRect.contains(event.x, event.y)) {
             onTap((((event.x - drawRect.left) / drawRect.width()) * 10000).toInt().coerceIn(0, 10000),
                 (((event.y - drawRect.top) / drawRect.height()) * 10000).toInt().coerceIn(0, 10000))
             performClick()

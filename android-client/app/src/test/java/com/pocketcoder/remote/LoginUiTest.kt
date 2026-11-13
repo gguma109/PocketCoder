@@ -22,6 +22,7 @@ class LoginUiTest {
                 if (view is ViewGroup) (0 until view.childCount).flatMap { descendants(view.getChildAt(it)) } else emptyList()
             val views = descendants(controller.get().window.decorView)
             fun button(label: String) = views.filterIsInstance<TextView>().single { it.text.toString() == label }
+            button("키보드").performClick()
             button("한/영 · 영문").performClick()
             button("ㅎ").performClick(); button("ㅏ").performClick(); button("ㄴ").performClick()
             val typed = views.filterIsInstance<EditText>().single { it.hint.toString().contains("Claude") }
