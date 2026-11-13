@@ -6,7 +6,7 @@
 4. 이 ZIP의 파일을 모두 같은 폴더에 풀고 `run-tailscale-windows.bat`를 실행합니다.
    서버가 활성 Tailscale 인터페이스를 찾아 그 IPv4 주소에만 바인딩합니다.
 5. 자동 감지가 안 되면 `run-windows.bat`에서 Tailscale 어댑터의 IPv4를 직접 입력합니다.
-6. 휴대폰 PocketCoder 0.4.0에 서버 창의 `Bind` 주소만 입력하고 연결합니다. **토큰은 없습니다.**
+6. 휴대폰 PocketCoder에 서버 창의 `Bind` 주소만 입력하고 연결합니다. **토큰은 없습니다.**
    최초 연결 후에는 주소를 기억하여 다음 앱 실행부터 자동으로 연결합니다.
 7. 휴대폰 Wi-Fi를 끄고 LTE/5G에서 연결해 외부 접속을 확인합니다. PC는 켜져 있고 절전 상태가 아니어야 합니다.
 
@@ -23,7 +23,9 @@ Tailscale ACL/접근 정책에서 본인 휴대폰이 PC의 TCP 8765에 접근�
 Windows 방화벽이 막으면 로컬 주소를 PC Tailscale IPv4, 원격 주소를 휴대폰 Tailscale IPv4로 한정한
 TCP 8765 인바운드 허용 규칙을 사용하세요. 공용 네트워크 전체에 Java 접근을 허용하지 마세요.
 
-Windows는 FFmpeg가 PATH 또는 서버 폴더에 있으면 H.264(목표 30fps, 2.5Mbps)를 우선 사용합니다.
+Windows는 FFmpeg가 PATH 또는 서버 폴더에 있으면 H.264를 우선 사용합니다.
+DXGI/D3D11 및 NVIDIA 경로는 목표 60fps/5Mbps이고, 호환 경로는 30fps/2.5Mbps입니다.
+`--video-fps=30`으로 낮출 수 있습니다. 앱 0.5.1은 서버의 목표 프레임률을 표시합니다.
 NVIDIA NVENC → libx264 순서로 실제 테스트 패턴 인코딩을 검증합니다. 인코더가 없으면 MJPEG(목표 15fps)입니다.
 FFmpeg는 별도 설치가 필요하며 이 ZIP에 포함되지 않습니다. 앱의 모니터 선택 버튼으로 화면을 전환할 수 있습니다.
 실제 프레임률/지연은 CPU·업로드 속도·Tailscale 직접/릴레이 경로에 따라 달라집니다.

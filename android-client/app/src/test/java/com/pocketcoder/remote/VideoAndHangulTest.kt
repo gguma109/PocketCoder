@@ -7,7 +7,7 @@ import org.junit.Test
 
 class VideoAndHangulTest {
     @Test fun h264WirePreservesPacketBoundariesAndRejectsTruncation() {
-        val header = VideoHeader(1280, 720, 30)
+        val header = VideoHeader(1280, 720, 60)
         val bytes = ByteArrayOutputStream().also { raw ->
             val out = DataOutputStream(raw)
             writeVideoHeader(out, header)

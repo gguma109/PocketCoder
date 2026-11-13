@@ -56,6 +56,7 @@ class RemoteClient(
         frameWorker.execute {
             try {
                 var h264 = false
+                var targetFps = 30
                 val streaming = withFrameConnection(open(current, "/health")) { c ->
                     if (c.responseCode == 401 && !legacyMode) {
                         val mode = c.getHeaderField("X-PocketCoder-Auth")
@@ -71,6 +72,7 @@ class RemoteClient(
                     if (!legacyMode && json.optString("auth") != "tailscale") throw IOException("Tailscale 로그인 서버 0.3.0으로 업데이트하세요")
                     current.streamInput = json.optString("input") == "stream"
                     h264 = json.optString("video") == "h264"
+                    targetFps = json.optInt("videoFps", 30).coerceIn(1, 120)
                     val count = json.optInt("displays", 1)
                     val selected = json.optInt("display", 0)
                     current.selectedDisplay = selected
@@ -80,7 +82,7 @@ class RemoteClient(
                 if (!isCurrent(current)) return@execute
                 active = true
                 if (!legacyMode) main.post { if (isCurrent(current)) onLoginConnected(host) }
-                state(current, true, if (h264) "연결됨 · H.264 · 목표 30fps" else if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
+                state(current, true, if (h264) "연결됨 · H.264 · 목표 ${targetFps}fps" else if (streaming) "연결됨 · MJPEG 스트리밍" else "연결됨 · 호환 화면 모드")
                 var failures = 0
                 while (isCurrent(current) && active && !Thread.currentThread().isInterrupted) {
                     try {

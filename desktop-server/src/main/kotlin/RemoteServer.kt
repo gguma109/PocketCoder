@@ -73,12 +73,14 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.4.0")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.5.1")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
     val app = DesktopController(robot, area, devices, display)
-    val videoEncoder = VideoEncoder.detect()
+    val requestedVideoFps = option(args, "video-fps", "60").toIntOrNull()?.takeIf { it == 30 || it == 60 }
+        ?: error("video-fps must be 30 or 60")
+    val videoEncoder = VideoEncoder.detect(requestedVideoFps)
     val videoProcess = AtomicReference<Process?>()
     val server = HttpServer.create(InetSocketAddress(bind, port), 32)
     server.executor = Executors.newFixedThreadPool(8) { r -> Thread(r, "pocketcoder-http").apply { isDaemon = true } }
@@ -86,7 +88,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.4.0","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","input":"stream","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.5.1","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -219,6 +221,7 @@ fun main(args: Array<String>) {
     }
     println(" Stream:  MJPEG, target $fps fps (actual rate depends on CPU/network)")
     println(" Video:   ${videoEncoder?.codec ?: "MJPEG fallback (install FFmpeg for H.264)"}")
+    println(" Capture: ${videoEncoder?.capture ?: "gdi"}; target ${videoEncoder?.fps ?: fps} fps")
     println(" Monitors: ${devices.size}; switch from the Android app")
     if (isTailscaleAddress(bind)) {
         println(" Tailscale address: connect the phone to the SAME tailnet, including over LTE/5G.")
@@ -446,6 +449,7 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
 private inline fun Graphics2D.useGraphics(block: (Graphics2D) -> Unit) = try { block(this) } finally { dispose() }
 
 private fun selfTest() {
+    VideoEncoder.selfTest()
     tailscaleAuthSelfTest()
     check(decodeForm("type=text&value=%ED%95%9C%EA%B8%80+OK")["value"] == "한글 OK")
     check(keyCode("ESC") == KeyEvent.VK_ESCAPE)
