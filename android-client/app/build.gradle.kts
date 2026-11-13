@@ -11,8 +11,8 @@ android {
         applicationId = "com.pocketcoder.remote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 20
-        versionName = "0.7.0"
+        versionCode = 21
+        versionName = "0.7.1"
     }
 
     buildFeatures { buildConfig = true }
@@ -45,6 +45,8 @@ android {
 
 dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // zxing-android-embedded calls ContextCompat when the scanner opens but does not ship androidx.core.
+    implementation("androidx.core:core:1.13.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
 }
