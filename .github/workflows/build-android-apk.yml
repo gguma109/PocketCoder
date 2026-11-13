@@ -130,7 +130,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $testRoot = [IO.Path]::GetFullPath((Join-Path $PWD 'installer-test'))
           if (!$testRoot.StartsWith($PWD.Path + [IO.Path]::DirectorySeparatorChar)) { throw 'Unsafe install test path' }
-          $setup = Join-Path $output 'PocketCoder-Setup-0.7.0.exe'
+          $setup = Join-Path $output 'PocketCoder-Setup-0.7.1.exe'
           $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=',('/DIR="' + $testRoot + '"')) -WindowStyle Hidden -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw 'Silent installation test failed' }
           $originalPath = $env:PATH
@@ -153,6 +153,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pocketcoder-windows-installer
-          path: installer/PocketCoder-Setup-0.7.0.exe
+          path: installer/PocketCoder-Setup-0.7.1.exe
           if-no-files-found: error
           retention-days: 30

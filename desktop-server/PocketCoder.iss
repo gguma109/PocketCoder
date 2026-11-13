@@ -7,7 +7,7 @@
 [Setup]
 AppId={{66CE29F0-21AD-4D66-AC3E-B116CB288893}
 AppName=PocketCoder PC
-AppVersion=0.7.0
+AppVersion=0.7.1
 AppPublisher=PocketCoder
 DefaultDirName={localappdata}\Programs\PocketCoder
 DefaultGroupName=PocketCoder
@@ -18,7 +18,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 OutputDir={#InstallerOutput}
-OutputBaseFilename=PocketCoder-Setup-0.7.0
+OutputBaseFilename=PocketCoder-Setup-0.7.1
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes

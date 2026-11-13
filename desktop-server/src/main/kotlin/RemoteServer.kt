@@ -73,7 +73,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.7.0")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.7.1")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -103,7 +103,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.7.0","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.7.1","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -392,6 +392,9 @@ internal fun keyCode(raw: String): Int? {
 private class DesktopController(private val robot: Robot, initialBounds: Rectangle,
     private val devices: Array<GraphicsDevice>, initialDisplay: Int) {
     private val lock = Any()
+    /** Buttons this server pressed via "down". Only these are released on control hand-off/disconnect:
+     *  a stray right-button-up opens a context menu on Windows even though nothing was pressed. */
+    private val pressedButtons = mutableSetOf<Int>()
     @Volatile private var bounds = initialBounds
     @Volatile var selectedDisplay = initialDisplay
         private set
@@ -497,8 +500,8 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
                 when (form["type"]) {
                     "click" -> click(button)
                     "double" -> { click(button); robot.delay(70); click(button) }
-                    "down" -> robot.mousePress(button)
-                    "up" -> robot.mouseRelease(button)
+                    "down" -> { robot.mousePress(button); pressedButtons += button }
+                    "up" -> if (pressedButtons.remove(button)) robot.mouseRelease(button)
                 }
             }
             "wheel" -> robot.mouseWheel(bounded(form, "amount", -15, 15))
@@ -522,9 +525,10 @@ private class DesktopController(private val robot: Robot, initialBounds: Rectang
 
     fun releaseButtons() = synchronized(lock) {
         motion.clear()
-        for (button in listOf(InputEvent.BUTTON1_DOWN_MASK, InputEvent.BUTTON2_DOWN_MASK, InputEvent.BUTTON3_DOWN_MASK)) {
+        for (button in pressedButtons.toList()) {
             try { robot.mouseRelease(button) } catch (_: Exception) { }
         }
+        pressedButtons.clear()
     }
     private fun click(button: Int) { robot.mousePress(button); robot.mouseRelease(button) }
 

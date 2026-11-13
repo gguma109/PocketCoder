@@ -19,7 +19,7 @@ class PocketCoderPC : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly JavaScriptSerializer json=new JavaScriptSerializer();
     readonly NotifyIcon tray=new NotifyIcon();
-    string ip,version="0.7.0"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
+    string ip,version="0.7.1"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
     static string Hash(string value) { using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-","").ToLowerInvariant().Substring(0,16); }
     string Instance { get { return Hash(Path.GetFullPath(Path.Combine(root,"pocketcoder-server.jar")).ToLowerInvariant()); } }
     PocketCoderPC() {
@@ -104,7 +104,7 @@ class PocketCoderPC : Form {
                 return new string[]{Convert.ToString(manifest["serverVersion"]),Convert.ToString(run["html_url"])};
             });
             Directory.CreateDirectory(Path.GetDirectoryName(stamp));File.WriteAllText(stamp,DateTime.UtcNow.ToString("O"));
-            if(result!=null&&new Version(result[0])>new Version("0.7.0")){
+            if(result!=null&&new Version(result[0])>new Version("0.7.1")){
                 updateLabel.Text="새 버전 "+result[0]+"이 있습니다.";
                 if(MessageBox.Show(this,"새 버전 "+result[0]+"을 다운로드하시겠습니까?","PocketCoder",MessageBoxButtons.YesNo)==DialogResult.Yes&&result[1].StartsWith("https://github.com/gguma109/PocketCoder/actions/runs/"))Process.Start(result[1]);
             }else if(manual)MessageBox.Show(this,"현재 최신 버전입니다.","PocketCoder");
