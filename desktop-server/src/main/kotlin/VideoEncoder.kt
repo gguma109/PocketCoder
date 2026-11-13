@@ -26,14 +26,18 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             val rotated = output.rotation == 2 || output.rotation == 4
             val width = if (rotated) size.height else size.width
             val height = if (rotated) size.width else size.height
-            val rotationFilter = when (output.rotation) {
-                2 -> ",hwdownload,format=nv12,format=yuv420p,transpose=clock"
-                3 -> ",hwdownload,format=nv12,format=yuv420p,hflip,vflip"
-                4 -> ",hwdownload,format=nv12,format=yuv420p,transpose=cclock"
-                else -> ""
+            val filters = mutableListOf("ddagrab=output_idx=${output.index}:framerate=$fps:draw_mouse=1")
+            val needsResize = size.width != area.width || size.height != area.height
+            if (needsResize || output.rotation in 2..4) {
+                // Some D3D11 drivers reject scale_d3d11 output textures. Native capture stays entirely on GPU;
+                // only resize/rotation downloads BGRA and converts it, preserving NVENC encoding.
+                filters += listOf("hwdownload", "format=bgra")
+                if (needsResize) filters += "scale=$width:$height:flags=lanczos"
+                filters += "format=yuv420p"
+                when (output.rotation) { 2 -> filters += "transpose=clock"; 3 -> filters += listOf("hflip", "vflip"); 4 -> filters += "transpose=cclock" }
             }
-            command += listOf("-filter_complex", "ddagrab=output_idx=${output.index}:framerate=$fps:draw_mouse=1," +
-                "scale_d3d11=width=$width:height=$height:format=nv12$rotationFilter")
+            filters += "setpts=N/($fps*TB)"
+            command += listOf("-filter_complex", filters.joinToString(","))
         } else {
             command += listOf("-f", "gdigrab", "-framerate", "$fps", "-draw_mouse", "1", "-offset_x", "${area.x}", "-offset_y", "${area.y}",
                 "-video_size", "${area.width}x${area.height}", "-i", "desktop", "-vf", "scale=${size.width}:${size.height}", "-pix_fmt", "yuv420p")
@@ -45,7 +49,7 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
     companion object {
         private fun encodingOptions(codec: String, fps: Int, profile: VideoProfile = VideoProfile(fps)): List<String> =
             listOf("-c:v", codec) + if (codec == "h264_nvenc") {
-                listOf("-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "${profile.cq}", "-rc-lookahead", "0", "-delay", "0", "-b:v", "${profile.mbps * 650}k", "-maxrate", "${profile.mbps * 1000}k", "-bufsize", "${profile.mbps * 50}k", "-g", "$fps", "-bf", "0")
+                listOf("-profile:v", "high", "-preset", "p4", "-tune", "ull", "-rc", "vbr", "-cq", "${profile.cq}", "-rc-lookahead", "0", "-delay", "0", "-b:v", "${profile.mbps * 650}k", "-maxrate", "${profile.mbps * 1000}k", "-bufsize", "${profile.mbps * 50}k", "-g", "$fps", "-bf", "0")
             } else if (codec == "libx264") {
                 listOf("-preset", "veryfast", "-tune", "zerolatency", "-crf", "${profile.cq}", "-maxrate", "${profile.mbps * 1000}k", "-bufsize", "${profile.mbps * 50}k", "-g", "30", "-bf", "0")
             } else {
@@ -62,11 +66,11 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
                 val probe = ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start()
                 try {
                     if (probe.waitFor(6, TimeUnit.SECONDS) && probe.exitValue() == 0) {
-                        val scale = ProcessBuilder(executable, "-hide_banner", "-h", "filter=scale_d3d11").redirectErrorStream(true).start()
+                        val scale = ProcessBuilder(executable, "-hide_banner", "-h", "filter=ddagrab").redirectErrorStream(true).start()
                         val help = try {
                             java.util.concurrent.CompletableFuture.supplyAsync { scale.inputStream.use { it.readNBytes(16384).toString(Charsets.UTF_8) } }.get(3, TimeUnit.SECONDS)
                         } catch (_: Exception) { "" } finally { scale.destroyForcibly() }
-                        val displays = if (codec == "h264_nvenc" && help.contains("Scale video using Direct3D11")) dxgiDisplays() else emptyMap()
+                        val displays = if (codec == "h264_nvenc" && help.contains("Desktop Duplication")) dxgiDisplays() else emptyMap()
                         return VideoEncoder(executable, codec, requestedFps, displays)
                     }
                 }
@@ -83,7 +87,7 @@ internal class VideoEncoder(private val executable: String, val codec: String, r
             val flat = encoder.command(primary).joinToString(" ")
             check(flat.contains("output_idx=0:framerate=60") && !flat.contains("hwdownload"))
             val rotated = encoder.command(portrait).joinToString(" ")
-            check(rotated.contains("width=1920:height=1080") && rotated.contains("transpose=cclock"))
+            check(rotated.contains("format=bgra") && rotated.contains("transpose=cclock"))
             check(flat.contains("-cq 12") && flat.contains("-maxrate 40000k"))
             check(encoder.dimensions(Rectangle(0, 0, 3840, 2160)) == VideoHeader(3840, 2160, 60))
             check(VideoEncoder("ffmpeg", "libx264").fps == 30)
