@@ -10,6 +10,8 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.InetAddress
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -282,5 +284,47 @@ private fun selfTest() {
     val encoded = "type=text&value=" + java.net.URLEncoder.encode(korean, "UTF-8")
     check(encoded.toByteArray(StandardCharsets.UTF_8).size <= 32768)
     check(decodeForm(encoded)["value"] == korean)
-    println("PASS: form decoding / Unicode / key mapping / random token")
+    protocolSelfTest(encoded, korean)
+    println("PASS: HTTP authentication/methods / form decoding / 1000 Korean characters / key mapping / random token / private bind")
+}
+
+/** Real loopback HTTP transport test, without screen capture or GUI input. */
+private fun protocolSelfTest(encoded: String, expected: String) {
+    val token = newToken()
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext("/health") { ex ->
+        guarded(ex, token, "GET") { send(ex, 200, "application/json", "{\"ok\":true}".toByteArray()) }
+    }
+    server.createContext("/input") { ex ->
+        guarded(ex, token, "POST") {
+            val form = decodeForm(ex.requestBody.use { it.readBytes() }.toString(StandardCharsets.UTF_8))
+            check(form["type"] == "text" && form["value"] == expected)
+            send(ex, 200, "application/json", "{\"ok\":true}".toByteArray())
+        }
+    }
+    server.start()
+    try {
+        fun request(path: String, method: String, auth: String?, body: String? = null): Int {
+            val connection = URL("http://127.0.0.1:${server.address.port}$path").openConnection() as HttpURLConnection
+            try {
+                connection.requestMethod = method
+                connection.connectTimeout = 2000
+                connection.readTimeout = 2000
+                if (auth != null) connection.setRequestProperty("Authorization", "Bearer $auth")
+                if (body != null) {
+                    connection.doOutput = true
+                    connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+                    connection.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+                }
+                val status = connection.responseCode
+                (if (status >= 400) connection.errorStream else connection.inputStream)?.use { it.readBytes() }
+                return status
+            } finally { connection.disconnect() }
+        }
+        check(request("/health", "GET", null) == 401)
+        check(request("/health", "GET", "invalid-token") == 401)
+        check(request("/health", "POST", token) == 405)
+        check(request("/health", "GET", token) == 200)
+        check(request("/input", "POST", token, encoded) == 200)
+    } finally { server.stop(0) }
 }
