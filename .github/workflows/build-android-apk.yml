@@ -42,6 +42,9 @@ jobs:
           if-no-files-found: ignore
       - name: Build and verify desktop server
         run: gradle --no-daemon -p ../desktop-server serverJar selfTest --stacktrace
+      - name: Verify Windows launcher process checks
+        shell: pwsh
+        run: ../desktop-server/pocketcoder-pc.ps1 -SelfTest
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -64,5 +67,7 @@ jobs:
             desktop-server/run-tailscale-windows.bat
             desktop-server/run-macos.sh
             desktop-server/TAILSCALE_SETUP.md
+            desktop-server/PocketCoder-PC.vbs
+            desktop-server/pocketcoder-pc.ps1
           if-no-files-found: error
           retention-days: 30

@@ -44,6 +44,13 @@ CI의 debug 서명키가 바뀌어 업데이트가 거부되면 기존 앱 삭�
 
 ## Windows PC 서버 실행
 
+
+간편 실행: 배포 ZIP 전체를 같은 폴더에 풀고 **PocketCoder-PC.vbs**를 더블클릭하면 한국어 PC 제어 창이 열립니다.
+`시작` / `종료` / `주소 복사` 버튼을 사용합니다. 창을 닫아도 서버는 유지되며 끄려면 `종료`를 누릅니다.
+같은 폴더의 서버만 제어하고 다른 Java 프로그램은 종료하지 않습니다. 로그는 `%LOCALAPPDATA%\PocketCoder\logs`에 저장됩니다.
+Java 17+, FFmpeg, Tailscale은 각 PC에 준비해야 하며 창에 감지 상태가 표시됩니다. Tailscale 연결 후 창을 여세요.
+아래 기존 BAT 실행도 계속 지원합니다.
+
 1. 같은 Actions 실행에서 pocketcoder-desktop-server Artifact를 내려받아 ZIP을 풉니다.
 2. Java/JDK 17 이상을 설치합니다. PATH의 Java 또는 Android Studio 기본 경로의 JBR을 사용합니다.
 3. pocketcoder-server.jar와 run-windows.bat를 같은 폴더에 두고 BAT를 실행합니다.
