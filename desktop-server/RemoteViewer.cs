@@ -30,6 +30,8 @@ class RemoteViewer : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer(), resizeTimer=new System.Windows.Forms.Timer();
     volatile bool stopped,mine,sound=true; bool armed=true; static RemoteViewer current; IntPtr videoWindow; volatile int display,width=1920,height=1080,generation; bool hardware=!String.Equals(LoadSetting("compatVideo","false"),"true",StringComparison.OrdinalIgnoreCase);
     volatile string position; long lastMove; int queueSize; bool full=true,polling,joined;
+    readonly CursorOverlay cursorOverlay=new CursorOverlay();
+    Bitmap remoteCursor;int remoteHotX,remoteHotY,remoteX,remoteY;bool remoteCursorVisible;long cursorReceived,lastPointerMotion;string cursorShape="";float cursorScale;bool cursorPredictionPending;int predictedX,predictedY;
     uint rendererThread;
     bool switching; int controlEpoch; HttpWebRequest videoRequest;
     long revision=-1; Process player,audio; IntPtr keyboardHook,mouseHook; Hook keyboardProc,mouseProc; int mouseObserved,mouseForwarded; int diagnosticTick;
@@ -46,7 +48,8 @@ class RemoteViewer : Form {
             dialog.Controls.AddRange(new Control[]{label,box,connect});dialog.AcceptButton=connect;FixedDpiLayout.Apply(dialog,0);
             if(dialog.ShowDialog(owner)!=DialogResult.OK)return;
             try{string address=ValidateAddress(box.Text); var health=ReadJson(address,"/health",null);
-                if(Convert.ToString(health["auth"])!="tailscale" || new Version(Convert.ToString(health["version"]))<new Version("0.8.3"))throw new Exception("원격 PC도 0.8.3 이상으로 업데이트해야 합니다.");
+                if(Convert.ToString(health["auth"])!="tailscale" || new Version(Convert.ToString(health["version"]))<new Version("0.9.0"))throw new Exception("원격 PC도 0.9.0 이상으로 업데이트해야 합니다.");
+                if(!health.ContainsKey("cursorChannel")||!Convert.ToBoolean(health["cursorChannel"]))throw new Exception("원격 PC에 0.9.0 설치 후 서버를 다시 시작하세요.");
                 if(Convert.ToString(health["video"])!="h264")throw new Exception("원격 PC의 H.264 인코더를 사용할 수 없습니다.");
                 foreach(var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())foreach(var local in nic.GetIPProperties().UnicastAddresses)if(local.Address.ToString()==address.Split(':')[0])throw new Exception("이 PC 자신의 주소입니다. 다른 PC의 Tailscale 주소를 입력하세요.");
                 Save("address",address);current=new RemoteViewer(address,health);current.Show();
@@ -85,12 +88,12 @@ class RemoteViewer : Form {
         MouseMove+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasMove(o,e);};MouseDown+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasDown(o,e);};MouseUp+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasUp(o,e);};
         canvas.MouseWheel+=CanvasWheel;MouseWheel+=CanvasWheel;
         canvas.MouseCaptureChanged+=delegate{if(!canvas.Capture&&buttons.Count>0)ReleaseHeld();};
-        keyboardProc=Keyboard;mouseProc=ObserveMouse;Shown+=async delegate{ApplyWindow();await Control("claim");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)AudioLoop);timer.Start();};
+        keyboardProc=Keyboard;mouseProc=ObserveMouse;Shown+=async delegate{ApplyWindow();await Control("claim");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)CursorLoop);Task.Run((Action)AudioLoop);timer.Start();};
         cursorTimer.Interval=16;cursorTimer.Tick+=delegate{UpdateLocalCursor();};cursorTimer.Start();
         resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped)RestartVideo();};
         timer.Interval=1000;timer.Tick+=async delegate{if(++diagnosticTick%5==0)ViewerLog("mouse observed="+mouseObserved+" forwarded="+mouseForwarded+" active="+ActiveInput+" armed="+armed);await Poll();};
         Deactivate+=delegate{BeginInvoke((Action)delegate{if(!ViewerForeground)SuspendInput();});};Activated+=delegate{if(mine&&armed)SetControl(true);};
-        FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();cursorTimer.Stop();DetachRendererInput();Unhook();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
+        FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();cursorTimer.Stop();cursorOverlay.Close();if(remoteCursor!=null)remoteCursor.Dispose();DetachRendererInput();Unhook();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
     }
     void Add(string text,EventHandler click){var b=new Button{Text=text,Height=FixedDpiLayout.Px(34),AutoSize=true,Padding=new Padding(FixedDpiLayout.Px(6))};b.Click+=click;bar.Controls.Add(b);}
     void ApplyWindow(){FormBorderStyle=full?FormBorderStyle.None:FormBorderStyle.Sizable;WindowState=full?FormWindowState.Maximized:FormWindowState.Normal;}
@@ -107,7 +110,7 @@ class RemoteViewer : Form {
     async Task Poll(){if(polling||stopped||!joined)return;polling=true;int epoch=controlEpoch,pollVideoGeneration=generation;try{var s=await Task.Run(()=>ReadJson(host,"/status?client="+client,null));if(epoch==controlEpoch)SetControl(Convert.ToBoolean(((Dictionary<string,object>)s["control"])["mine"]));
         if(switching||pollVideoGeneration!=generation)return;long next=Convert.ToInt64(s["displayRevision"]);display=Convert.ToInt32(s["display"]);if(next!=revision){revision=next;RestartVideo();}
     }catch{SetControl(false);state.Text="연결 확인 중…";}finally{polling=false;}}
-    void RestartVideo(){DetachRendererInput();Interlocked.Increment(ref generation);var request=videoRequest;if(request!=null)request.Abort();StopProcess(ref player);videoWindow=IntPtr.Zero;}
+    void RestartVideo(){cursorOverlay.Hide();cursorReceived=0;cursorPredictionPending=false;DetachRendererInput();Interlocked.Increment(ref generation);var request=videoRequest;if(request!=null)request.Abort();StopProcess(ref player);videoWindow=IntPtr.Zero;}
     async Task SwitchDisplay(int index){
         if(switching)return;switching=true;
         try{if(!mine){armed=true;await Control("claim");}if(!mine){state.Text="조작권을 가져오지 못했습니다.";return;}
@@ -175,9 +178,9 @@ class RemoteViewer : Form {
     bool ActiveInput {get{return mine&&armed&&!stopped&&(ViewerForeground||ContainsFocus);}}
     // A balanced thread/input-queue visibility scope also covers the embedded SDL child.
     // WM_SETCURSOR alone is insufficient when the renderer owns cursor updates.
-    bool HideLocalPointer {get{int x,y;return canvas!=null&&!stopped&&videoWindow!=IntPtr.Zero&&ViewerForeground&&PointerPosition(canvas.PointToClient(Cursor.Position),out x,out y);}}
+    bool HideLocalPointer {get{int x,y;return canvas!=null&&!stopped&&remoteCursor!=null&&cursorReceived!=0&&(Stopwatch.GetTimestamp()-cursorReceived)*1000/Stopwatch.Frequency<2000&&videoWindow!=IntPtr.Zero&&ViewerForeground&&PointerPosition(canvas.PointToClient(Cursor.Position),out x,out y);}}
     void DetachRendererInput(){localCursor.SetHidden(false);if(rendererThread!=0){AttachThreadInput(GetCurrentThreadId(),rendererThread,false);rendererThread=0;}}
-    void UpdateLocalCursor(){bool hide=HideLocalPointer;bool changed=localCursor.Hidden!=hide;localCursor.SetHidden(hide);if(changed){ViewerLog("local cursor hidden="+hide+" "+ScopedCursorVisibility.VisibleState());}}
+    void UpdateLocalCursor(){UpdateCursorOverlay();bool hide=HideLocalPointer;bool changed=localCursor.Hidden!=hide;localCursor.SetHidden(hide);if(changed){ViewerLog("local cursor hidden="+hide+" "+ScopedCursorVisibility.VisibleState());}}
     protected override void WndProc(ref Message m){if(m.Msg==0x20&&InputSurface.ApplyCursor(ref m,HideLocalPointer))return;base.WndProc(ref m);}
 
     void InstallHooks(){if(keyboardHook!=IntPtr.Zero||stopped)return;keyboardHook=SetWindowsHookEx(13,keyboardProc,GetModuleHandle(null),0);mouseHook=SetWindowsHookEx(14,mouseProc,GetModuleHandle(null),0);if(keyboardHook==IntPtr.Zero){ViewerLog("hook installation failed: "+Marshal.GetLastWin32Error());Unhook();state.Text="입력 훅을 시작하지 못했습니다.";}}
@@ -209,13 +212,13 @@ class RemoteViewer : Form {
     }
     void CanvasMove(object sender,MouseEventArgs e){
         if(!ActiveInput)return;int x,y;if(!PointerPosition(e.Location,out x,out y))return;
-        long now=Stopwatch.GetTimestamp();if((now-lastMove)*1000/Stopwatch.Frequency<4)return;lastMove=now;
+        long now=Stopwatch.GetTimestamp();lastPointerMotion=now;cursorPredictionPending=true;predictedX=x;predictedY=y;UpdateCursorOverlay(canvas.PointToScreen(e.Location));if((now-lastMove)*1000/Stopwatch.Frequency<4)return;lastMove=now;
         Interlocked.Exchange(ref position,"client="+client+"&screen="+display+"&type=pos&x="+x+"&y="+y);wake.Set();
     }
     static int PointerButton(MouseButtons button){return button==MouseButtons.Left?1:button==MouseButtons.Right?2:button==MouseButtons.Middle?3:0;}
     void CanvasDown(object sender,MouseEventArgs e){
         if(!ActiveInput)return;int x,y,button=PointerButton(e.Button);if(button==0||!PointerPosition(e.Location,out x,out y))return;
-        Interlocked.Exchange(ref position,null);Send("type=pos&x="+x+"&y="+y);
+        lastPointerMotion=Stopwatch.GetTimestamp();cursorPredictionPending=true;predictedX=x;predictedY=y;UpdateCursorOverlay(canvas.PointToScreen(e.Location));Interlocked.Exchange(ref position,null);Send("type=pos&x="+x+"&y="+y);
         lock(heldLock)buttons.Add(button);canvas.Capture=true;Send("type=down&button="+ButtonName(button));
     }
     void CanvasUp(object sender,MouseEventArgs e){
@@ -238,12 +241,47 @@ class RemoteViewer : Form {
         p.StartInfo.EnvironmentVariables["SDL_WINDOWS_DPI_SCALING"]="0";
         p.Start();return p;}
     static void StopProcess(ref Process slot){var p=Interlocked.Exchange(ref slot,null);if(p!=null){try{if(!p.HasExited)p.Kill();}catch{}try{p.Dispose();}catch{}}}
-    void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;int gen=generation;try{r=StreamRequest("/video?fps=60&quality=native&mbps=60&cursor=1&live=1");videoRequest=r;using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
+    void VideoLoop(){while(!stopped){HttpWebRequest r=null;Process p=null;int gen=generation;try{r=StreamRequest("/video?fps=60&quality=native&mbps=60&cursor=0&live=1");videoRequest=r;using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50435631)throw new IOException("잘못된 영상 헤더");width=Int(input);height=Int(input);int fps=Int(input);if(width<1||width>16384||height<1||height>16384||fps<1||fps>240)throw new IOException("잘못된 영상 크기");
         Size target=Size.Empty;Invoke((Action)delegate{target=canvas.ClientSize;});p=Play((hardware?"-hwaccel d3d11va ":"")+"-loglevel error -noborder -x "+target.Width+" -y "+target.Height+" -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -sync ext -f h264 -i pipe:0");player=p;
         Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;DetachRendererInput();videoWindow=embedded.MainWindowHandle;uint rendererProcess;uint thread=GetWindowThreadProcessId(videoWindow,out rendererProcess);if(thread!=GetCurrentThreadId()&&AttachThreadInput(GetCurrentThreadId(),thread,true))rendererThread=thread;SetParent(videoWindow,canvas.Handle);SetWindowLong(videoWindow,-16,0x50000000);EnableWindow(videoWindow,false);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();canvas.Focus();});break;}Thread.Sleep(50);}});
         while(!stopped&&gen==generation){int size=Int(input);Bytes(input,8);if(size<1||size>8388608)throw new IOException("영상 패킷 크기 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,b.Length);p.StandardInput.BaseStream.Flush();}
     }}catch(Exception e){if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0){hardware=false;if(IsHandleCreated&&!stopped)BeginInvoke((Action)delegate{displayMode.Text="표시: 호환";});}if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;if(videoRequest==r)videoRequest=null;}if(!stopped&&gen==generation)Thread.Sleep(300);}}
+    // Cursor state never waits for H.264 encoding/decoding. Predictions do not move the OS mouse.
+    void CursorLoop(){while(!stopped){try{
+        int expectedGeneration=generation;string known=cursorShape;
+        var data=ReadJson(host,"/cursor?shape="+Uri.EscapeDataString(known),null);
+        if(stopped)break;
+        BeginInvoke((Action)delegate{try{
+            if(stopped||generation!=expectedGeneration||Convert.ToInt32(data["display"])!=display||Convert.ToInt64(data["revision"])!=revision)return;
+            if(!Convert.ToBoolean(data["ready"])){cursorReceived=0;return;}
+            Bitmap next=null;int hotX=remoteHotX,hotY=remoteHotY;
+            object shapeValue;if(data.TryGetValue("shape",out shapeValue)&&shapeValue!=null){
+                var shape=(Dictionary<string,object>)shapeValue;string encoded=Convert.ToString(shape["png"]);
+                if(encoded.Length>524288)throw new IOException("Cursor image too large");
+                using(var stream=new MemoryStream(Convert.FromBase64String(encoded)))using(var decoded=Image.FromStream(stream)){
+                    if(decoded.Width>256||decoded.Height>256)throw new IOException("Cursor dimensions");next=new Bitmap(decoded);
+                }
+                hotX=Convert.ToInt32(shape["hotX"]);hotY=Convert.ToInt32(shape["hotY"]);
+                if(hotX<0||hotY<0||hotX>=next.Width||hotY>=next.Height){next.Dispose();return;}
+            }
+            if(next!=null){if(remoteCursor!=null)remoteCursor.Dispose();remoteCursor=next;remoteHotX=hotX;remoteHotY=hotY;cursorScale=0;cursorShape=Convert.ToString(data["shapeId"]);}
+            remoteX=Convert.ToInt32(data["x"]);remoteY=Convert.ToInt32(data["y"]);if(Math.Abs(remoteX-predictedX)<=3&&Math.Abs(remoteY-predictedY)<=3)cursorPredictionPending=false;remoteCursorVisible=Convert.ToBoolean(data["visible"]);cursorReceived=Stopwatch.GetTimestamp();
+        }catch{cursorReceived=0;cursorShape="";}});
+    }catch{}Thread.Sleep(16);}}
+    void UpdateCursorOverlay(Point? predictedPoint=null){
+        long now=Stopwatch.GetTimestamp();if(stopped||!ViewerForeground||videoWindow==IntPtr.Zero||remoteCursor==null||cursorReceived==0){cursorOverlay.Hide();return;}
+        long idle=(now-lastPointerMotion)*1000/Stopwatch.Frequency;
+        bool predicted=ActiveInput&&(predictedPoint.HasValue||(HideLocalPointer&&(idle<250||(cursorPredictionPending&&idle<1000))));
+        if(!predicted&&(now-cursorReceived)*1000/Stopwatch.Frequency>1000){cursorOverlay.Hide();return;}
+        if(!predicted&&!remoteCursorVisible){cursorOverlay.Hide();return;}
+        float scale=Math.Min((float)canvas.Width/width,(float)canvas.Height/height);
+        if(scale<=0)return;
+        if(cursorScale!=scale){cursorOverlay.SetImage(remoteCursor,remoteHotX,remoteHotY,scale);cursorScale=scale;}
+        Point point=predicted?(predictedPoint??Cursor.Position):canvas.PointToScreen(new Point((int)((canvas.Width-width*scale)/2+remoteX*(width*scale-1)/10000),(int)((canvas.Height-height*scale)/2+remoteY*(height*scale-1)/10000)));
+        if(!predicted){int x,y;if(!PointerPosition(canvas.PointToClient(point),out x,out y)){cursorOverlay.Hide();return;}}
+        if(cursorOverlay.Owner==null)cursorOverlay.Owner=this;cursorOverlay.Present(point);
+    }
     void AudioLoop(){HttpWebRequest r=null;Process p=null;try{r=StreamRequest("/audio");using(var response=r.GetResponse())using(var input=response.GetResponseStream()){
         if(Int(input)!=0x50434131)throw new IOException("잘못된 오디오 헤더");int rate=Int(input),channels=Int(input),bits=Int(input);if(rate<8000||rate>192000||channels!=2||bits!=16)throw new IOException("지원하지 않는 오디오 형식");
         p=Play("-loglevel error -nodisp -autoexit -fflags nobuffer -f s16le -ar "+rate+" -ac "+channels+" -i pipe:0");audio=p;
@@ -354,4 +392,32 @@ internal sealed class ScopedCursorVisibility : IDisposable {
         int disposed=ShowCursor(true);ShowCursor(false);
         if(disposed-1!=baseline)throw new Exception("Cursor visibility not restored on dispose");
     }
+}
+
+// Per-pixel-alpha, click-through owned window. It never takes focus or injects pointer input.
+internal sealed class CursorOverlay : Form {
+    Bitmap image;int hotX,hotY;
+    internal CursorOverlay(){FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=false;StartPosition=FormStartPosition.Manual;}
+    protected override bool ShowWithoutActivation {get{return true;}}
+    protected override CreateParams CreateParams {get{var p=base.CreateParams;p.ExStyle|=0x80000|0x20|0x08000000|0x80;return p;}}
+    internal void SetImage(Bitmap source,int x,int y,float scale){
+        if(image!=null)image.Dispose();int w=Math.Max(1,(int)Math.Round(source.Width*scale)),h=Math.Max(1,(int)Math.Round(source.Height*scale));
+        image=new Bitmap(w,h,System.Drawing.Imaging.PixelFormat.Format32bppArgb);using(var g=Graphics.FromImage(image)){g.DrawImage(source,new Rectangle(0,0,w,h));}
+        hotX=(int)Math.Round(x*scale);hotY=(int)Math.Round(y*scale);
+        IntPtr screen=GetDC(IntPtr.Zero),dc=CreateCompatibleDC(screen),bitmap=image.GetHbitmap(Color.FromArgb(0)),old=SelectObject(dc,bitmap);
+        try{var size=new Size(w,h);var origin=new Point();var destination=new Point(Left,Top);var blend=new Blend{operation=0,flags=0,alpha=255,format=1};
+            if(!UpdateLayeredWindow(Handle,screen,ref destination,ref size,dc,ref origin,0,ref blend,2))throw new System.ComponentModel.Win32Exception();
+        }finally{SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(IntPtr.Zero,screen);}
+    }
+    internal void Present(Point point){if(image==null)return;if(!Visible)Show();SetWindowPos(Handle,new IntPtr(-1),point.X-hotX,point.Y-hotY,0,0,0x1|0x10|0x40);}
+    protected override void Dispose(bool disposing){if(disposing&&image!=null){image.Dispose();image=null;}base.Dispose(disposing);}
+    [StructLayout(LayoutKind.Sequential,Pack=1)]struct Blend {public byte operation,flags,alpha,format;}
+    [DllImport("user32.dll",SetLastError=true)]static extern bool UpdateLayeredWindow(IntPtr window,IntPtr screen,ref Point point,ref Size size,IntPtr source,ref Point origin,uint key,ref Blend blend,uint flags);
+    [DllImport("user32.dll")]static extern IntPtr GetDC(IntPtr window);
+    [DllImport("user32.dll")]static extern int ReleaseDC(IntPtr window,IntPtr dc);
+    [DllImport("gdi32.dll")]static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")]static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")]static extern IntPtr SelectObject(IntPtr dc,IntPtr obj);
+    [DllImport("gdi32.dll")]static extern bool DeleteObject(IntPtr obj);
+    [DllImport("user32.dll")]static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int w,int h,uint flags);
 }

@@ -76,7 +76,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.8.6")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.9.0")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -86,6 +86,7 @@ fun main(args: Array<String>) {
     val videoEncoder = VideoEncoder.detect(requestedVideoFps)
     val videoHub = videoEncoder?.let { VideoHub(it) }
     val audioHub = AudioHub()
+    val cursorHub = CursorHub()
     val lease = ControlLease(releaseButtons = { app.releaseButtons() })
     val leaseTimer = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "pocketcoder-control-expiry").apply { isDaemon = true } }
     leaseTimer.scheduleAtFixedRate({ lease.state("") }, 1, 1, java.util.concurrent.TimeUnit.SECONDS)
@@ -106,7 +107,14 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.8.6","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"cursorlessVideo":true,"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.9.0","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"cursorlessVideo":true,"cursorChannel":${cursorHub.available},"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
+        }
+    }
+    server.createContext("/cursor") { ex ->
+        guarded(ex, authorize, "GET") {
+            val query = decodeForm(ex.requestURI.rawQuery.orEmpty())
+            val state = cursorHub.state(app.currentBounds(), app.selectedDisplay, app.displayRevision, query["shape"].orEmpty())
+            send(ex, 200, "application/json; charset=utf-8", gson.toJson(state).toByteArray())
         }
     }
     server.createContext("/frame") { ex ->
@@ -279,7 +287,7 @@ fun main(args: Array<String>) {
             }
         }
     }
-    Runtime.getRuntime().addShutdownHook(Thread { videoHub?.close(); audioHub.close(); leaseTimer.shutdownNow(); app.releaseButtons(); server.stop(0) })
+    Runtime.getRuntime().addShutdownHook(Thread { videoHub?.close(); audioHub.close(); cursorHub.close(); leaseTimer.shutdownNow(); app.releaseButtons(); server.stop(0) })
     server.start()
     println("\n=============================================")
     println(" POCKET CODER - PC server")
