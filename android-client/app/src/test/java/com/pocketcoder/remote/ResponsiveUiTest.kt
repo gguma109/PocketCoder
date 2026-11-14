@@ -58,9 +58,10 @@ class ResponsiveUiTest {
             val screen = decor.findViewWithTag<RemoteScreenView>("remoteScreen")
             seedScreen(screen)
             val pad = descendants(decor).filterIsInstance<TrackPadView>().single()
-            assertEquals((88 * pad.resources.displayMetrics.density).toInt(), pad.height)
+            assertEquals((100 * pad.resources.displayMetrics.density).toInt(), pad.height)
             val padBounds = Rect(); assertTrue(pad.getGlobalVisibleRect(padBounds))
             assertEquals("Entire compact trackpad must fit", pad.height, padBounds.height())
+            checkCompactMouse(decor)
             save(decor, "s25-mouse")
             val originalHeight = screen.height
             val typed = decor.findViewWithTag<android.widget.EditText>("phoneInput")
@@ -95,6 +96,7 @@ class ResponsiveUiTest {
             assertTrue(deck.left >= screen.right)
             assertTrue(screen.width > deck.width)
             assertEquals(screen.height, deck.height)
+            checkCompactMouse(decor)
             save(decor, "s25-landscape")
             val typed = decor.findViewWithTag<android.widget.EditText>("phoneInput")
             typed.requestFocus(); typed.performClick()
@@ -138,6 +140,42 @@ class ResponsiveUiTest {
             assertEquals(screen.width, deck.width)
             assertEquals(screen.bottom, deck.top)
             save(decor, "tablet-portrait-input")
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    private fun checkCompactMouse(decor: View) {
+        val pad = decor.findViewWithTag<TrackPadView>("mouseTrackpad")
+        val scroll = decor.findViewWithTag<ScrollStripView>("mouseScroll")
+        val drag = decor.findViewWithTag<TextView>("mouseDrag")
+        val control = decor.findViewWithTag<TextView>("mouseControl")
+        val padRect = Rect(); assertTrue(pad.getGlobalVisibleRect(padRect))
+        for (view in listOf(scroll, drag, control, button(decor, "좌클릭"), button(decor, "우클릭"))) {
+            val bounds = Rect(); assertTrue(view.getGlobalVisibleRect(bounds))
+            assertEquals("Mouse control must not be clipped", view.height, bounds.height())
+            assertTrue("Mouse actions belong beside the pad", bounds.left >= padRect.right)
+        }
+        assertTrue("Small screens still need enough steering room", pad.width >= 100 * pad.resources.displayMetrics.density)
+    }
+    @Test fun compactMouseActionsFitBesidePadOnNarrowPhone() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val decor = controller.get().window.decorView
+            measure(decor, 320, 700)
+            seedScreen(decor.findViewWithTag("remoteScreen"))
+            checkCompactMouse(decor)
+            save(decor, "phone-narrow-mouse")
+        } finally { controller.pause().stop().destroy() }
+    }
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp-port-xhdpi")
+    fun compactMouseOnPortraitTablet() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val decor = controller.get().window.decorView
+            measure(decor, 800, 1280)
+            seedScreen(decor.findViewWithTag("remoteScreen"))
+            checkCompactMouse(decor)
+            save(decor, "tablet-portrait-mouse")
         } finally { controller.pause().stop().destroy() }
     }
 

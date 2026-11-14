@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private var mouseExpanded = true
     private lateinit var clearDraftButton: TextView
     private val compactLandscape get() = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    private lateinit var scrollStrip: ScrollStripView
     private lateinit var trackpad: TrackPadView
     private lateinit var dragButton: TextView
     private lateinit var controlButton: TextView
@@ -75,9 +76,11 @@ class MainActivity : Activity() {
             onControl = { mine, label ->
                 controlling = mine; controllerLabel = label
                 controlButton.text = if (mine) "조작 중" else "조작권"
+                controlButton.contentDescription = if (mine) "이 기기가 원격 PC 조작 중" else "원격 조작권 가져오기"
                 controlButton.background = round(if (mine) gold else keyBg, 8)
                 controlButton.setTextColor(if (mine) navy else white)
-                if (!mine) { trackpad.cancelDrag(); trackpad.dragMode = false; dragButton.text = "드래그" }
+                if (!mine) { trackpad.cancelDrag(); trackpad.dragMode = false; scrollStrip.cancelTouch(); updateDragButton() }
+                scrollStrip.isEnabled = mine
             },
             audioEnabled = { prefs.getBoolean("audioEnabled", true) },
             audioVolume = { prefs.getFloat("audioVolume", .7f) }
@@ -132,23 +135,19 @@ class MainActivity : Activity() {
             background = round(panel, 14); setPadding(dp(6), dp(6), dp(6), dp(4))
         }
         val mouseHeader = row().apply { gravity = Gravity.CENTER_VERTICAL }
-        mouseHeader.addView(text("마우스", 11f, muted), LinearLayout.LayoutParams(0, dp(28), 1f))
+        mouseHeader.addView(text("마우스 · 두 손가락 스크롤", 10f, muted), LinearLayout.LayoutParams(0, dp(28), 1f))
         mouseToggleButton = tile("접기", white, keyBg, 56, 28) { toggleMouse() }
         mouseToggleButton.tag = "mouseToggle"
-        dragButton = tile("드래그", white, keyBg, 64, 28) {
+        dragButton = tile("드래그", white, keyBg, 62, 48) {
             if (!controlling) { Toast.makeText(this, "먼저 조작권을 가져오세요", Toast.LENGTH_SHORT).show() }
             else {
                 trackpad.cancelDrag(); trackpad.dragMode = !trackpad.dragMode
-                dragButton.text = if (trackpad.dragMode) "드래그 ON" else "드래그"
-                dragButton.background = round(if (trackpad.dragMode) gold else keyBg, 8)
-                dragButton.setTextColor(if (trackpad.dragMode) navy else white)
+                updateDragButton()
             }
         }
-        mouseHeader.addView(dragButton, LinearLayout.LayoutParams(dp(64), dp(28)).apply { rightMargin = dp(4) })
-        controlButton = tile("조작권", white, keyBg, 64, 28) { client.claimControl() }
-        mouseHeader.addView(controlButton, LinearLayout.LayoutParams(dp(64), dp(28)).apply { rightMargin = dp(4) })
+        controlButton = tile("조작권", white, keyBg, 62, 48) { client.claimControl() }
         mouseHeader.addView(mouseToggleButton)
-        controls.addView(mouseHeader, LinearLayout.LayoutParams(match, dp(32)))
+        controls.addView(mouseHeader, LinearLayout.LayoutParams(match, dp(28)))
         val shortcuts = row()
         listOf("ESC", "TAB", "PC ⌫", "Delete", "ENTER", "Ctrl+C", "Ctrl+V", "Ctrl+X", "Ctrl+A", "Ctrl+Z", "CTRL", "ALT", "SHIFT", "CMD", "←", "↑", "↓", "→", "PG↑", "PG↓").forEach { label ->
             val width = when { label.startsWith("Ctrl+") -> 66; label in listOf("SHIFT", "CTRL", "PC ⌫", "Delete", "ENTER") -> 56; else -> 44 }
@@ -169,25 +168,39 @@ class MainActivity : Activity() {
             tag = "controlScroll"; isFillViewport = true; isVerticalScrollBarEnabled = false; addView(panes)
         }
         controls.addView(controlScroll, LinearLayout.LayoutParams(match, 0, 1f))
-        mousePane = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        mousePane.addView(text("탭으로 클릭 · 길게 눌러 우클릭 · 두 손가락 스크롤", 10f, muted), bottomMargin(5))
+        mousePane = object : LinearLayout(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val bounded = View.MeasureSpec.makeMeasureSpec(minOf(View.MeasureSpec.getSize(widthMeasureSpec), dp(600)), View.MeasureSpec.EXACTLY)
+                super.onMeasure(bounded, heightMeasureSpec)
+            }
+        }.apply { orientation = LinearLayout.VERTICAL; tag = "mouseControls" }
         val padRow = row()
         trackpad = TrackPadView(this,
             onMove = { dx, dy -> send("move", "dx" to "$dx", "dy" to "$dy") },
             onClick = { button -> send(if (button == "double") "double" else "click", "button" to if (button == "double") "left" else button) },
             onWheel = { send("wheel", "amount" to "$it") },
             onButton = { down -> send(if (down) "down" else "up", "button" to "left") }
-        ).apply { sensitivity = prefs.getFloat("sensitivity", 2.1f); acceleration = prefs.getBoolean("acceleration", false) }
-        padRow.addView(trackpad, LinearLayout.LayoutParams(0, dp(88), 1f))
-        val mouseButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        ).apply { tag = "mouseTrackpad"; contentDescription = "마우스 이동: 탭으로 클릭, 길게 눌러 우클릭"; sensitivity = prefs.getFloat("sensitivity", 2.1f); acceleration = prefs.getBoolean("acceleration", false) }
+        padRow.addView(trackpad, LinearLayout.LayoutParams(0, dp(100), 1f))
+        val mouseButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "mouseSideButtons" }
+        val clicks = row()
         listOf("좌클릭", "우클릭").forEachIndexed { index, label ->
-            mouseButtons.addView(tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 68, 42) {
+            clicks.addView(tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 62, 48) {
                 send("click", "button" to if (index == 0) "left" else "right")
-            }, LinearLayout.LayoutParams(dp(68), dp(42)).apply { bottomMargin = if (index == 0) dp(4) else 0 })
+            }.apply { textSize = 11f; contentDescription = label }, LinearLayout.LayoutParams(dp(62), dp(48)).apply { if (index == 1) leftMargin = dp(4) })
         }
-        padRow.addView(mouseButtons, LinearLayout.LayoutParams(dp(68), dp(88)).apply { leftMargin = dp(6) })
-        mousePane.addView(padRow)
-        panes.addView(mousePane)
+        mouseButtons.addView(clicks, LinearLayout.LayoutParams(match, dp(48)))
+        val modes = row()
+        dragButton.apply { tag = "mouseDrag"; textSize = 11f; contentDescription = "드래그 끔: 켜면 이동할 때 왼쪽 버튼을 누릅니다" }
+        controlButton.apply { tag = "mouseControl"; textSize = 11f; contentDescription = "원격 조작권 가져오기" }
+        modes.addView(dragButton, LinearLayout.LayoutParams(dp(62), dp(48)))
+        modes.addView(controlButton, LinearLayout.LayoutParams(dp(62), dp(48)).apply { leftMargin = dp(4) })
+        mouseButtons.addView(modes, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(4) })
+        padRow.addView(mouseButtons, LinearLayout.LayoutParams(dp(128), dp(100)).apply { leftMargin = dp(6) })
+        scrollStrip = ScrollStripView(this) { send("wheel", "amount" to "$it") }.apply { tag = "mouseScroll" }
+        padRow.addView(scrollStrip, LinearLayout.LayoutParams(dp(36), dp(100)).apply { leftMargin = dp(6) })
+        mousePane.addView(padRow, LinearLayout.LayoutParams(match, dp(100)))
+        panes.addView(mousePane, LinearLayout.LayoutParams(match, wrap).apply { gravity = Gravity.CENTER_HORIZONTAL })
 
         composer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "composer" }
         val composeRow = row().apply { gravity = Gravity.CENTER_VERTICAL }
@@ -394,13 +407,21 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
     }
 
+    private fun updateDragButton() {
+        dragButton.isSelected = trackpad.dragMode
+        dragButton.background = round(if (trackpad.dragMode) gold else keyBg, 8)
+        dragButton.setTextColor(if (trackpad.dragMode) navy else white)
+        dragButton.contentDescription = if (trackpad.dragMode) "드래그 켬: 이동할 때 왼쪽 버튼 누름" else "드래그 끔: 켜면 이동할 때 왼쪽 버튼을 누릅니다"
+    }
+
     private fun setMouseExpanded(expanded: Boolean) {
         mouseExpanded = expanded
         if (!::workspace.isInitialized) return
+        if (!expanded) { trackpad.cancelDrag(); scrollStrip.cancelTouch() }
         controlScroll.visibility = if (expanded) View.VISIBLE else View.GONE
         mouseToggleButton.text = if (expanded) "접기" else "펼치기"
         shortcutStrip.visibility = if (compactLandscape && !expanded) View.GONE else View.VISIBLE
-        workspace.controlHeightDp = if (expanded) 244 else if (compactLandscape) 88 else 132
+        workspace.controlHeightDp = if (expanded) 228 else if (compactLandscape) 88 else 132
     }
 
     private fun toggleMouse() {
@@ -431,6 +452,7 @@ class MainActivity : Activity() {
     private fun showState(isOnline: Boolean, message: String) {
         val wasConnected = connected
         connected = isOnline
+        if (!isOnline) scrollStrip.cancelTouch()
         status.text = (if (isOnline) "●  " else "○  ") + message
         status.setTextColor(if (isOnline) gold else muted)
         connectButton.text = if (isOnline) "연결 해제" else "PC 연결"
@@ -548,6 +570,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         trackpad.cancelDrag()
+        scrollStrip.cancelTouch()
         client.pause()
         super.onStop()
     }
