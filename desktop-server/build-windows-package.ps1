@@ -56,5 +56,5 @@ if($LASTEXITCODE -ne 0){throw 'Playback helper compilation failed'}
 if($LASTEXITCODE -ne 0){throw 'Audio conversion self-test failed'}
 & (Join-Path $payloadRoot 'runtime\bin\java.exe') '-Dsun.java2d.uiScale=2' -jar (Join-Path $payloadRoot 'pocketcoder-server.jar') --self-test
 if($LASTEXITCODE -ne 0){throw 'Bundled runtime/server self-test failed'}
-@{version='0.9.3';ffmpegUrl=$url;ffmpegSha256=$expected;ffmpegSource='f1acb0a2666c78d92688f4c3d2803a132f5590f6';runtime=(Get-Content (Join-Path $runtime 'release') -Raw)} | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $payloadRoot 'component-manifest.json')
+@{version='0.9.4';ffmpegUrl=$url;ffmpegSha256=$expected;ffmpegSource='f1acb0a2666c78d92688f4c3d2803a132f5590f6';runtime=(Get-Content (Join-Path $runtime 'release') -Raw)} | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $payloadRoot 'component-manifest.json')
 Write-Output 'Windows payload, audio conversion and bundled runtime verified.'
