@@ -19,7 +19,7 @@ class PocketCoderPC : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly JavaScriptSerializer json=new JavaScriptSerializer();
     readonly NotifyIcon tray=new NotifyIcon();
-    string ip,version="0.9.2"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
+    string ip,version="0.9.3"; bool busy,checking,ready,owned,exitRequested,qrLoaded;
     static string Hash(string value) { using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-","").ToLowerInvariant().Substring(0,16); }
     string Instance { get { return Hash(Path.GetFullPath(Path.Combine(root,"pocketcoder-server.jar")).ToLowerInvariant()); } }
     PocketCoderPC(float previewScale=0) {

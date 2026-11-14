@@ -76,7 +76,7 @@ fun main(args: Array<String>) {
         checkIdentity
     } else { ex: HttpExchange -> bearerAuthorized(ex, token!!) }
     val authorize: (HttpExchange) -> Boolean = { ex ->
-        ex.responseHeaders.set("X-PocketCoder-Version", "0.9.2")
+        ex.responseHeaders.set("X-PocketCoder-Version", "0.9.3")
         ex.responseHeaders.set("X-PocketCoder-Auth", authMode)
         verifyIdentity(ex)
     }
@@ -107,7 +107,7 @@ fun main(args: Array<String>) {
     server.createContext("/health") { ex ->
         guarded(ex, authorize, "GET") {
             val current = app.currentBounds()
-            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.9.2","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"cursorlessVideo":true,"cursorChannel":${cursorHub.available},"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
+            send(ex, 200, "application/json; charset=utf-8", """{"ok":true,"version":"0.9.3","width":${current.width},"height":${current.height},"display":${app.selectedDisplay},"displayRevision":${app.displayRevision},"stream":"mjpeg","fps":$fps,"auth":"$authMode","video":"${if (videoEncoder != null) "h264" else "mjpeg"}","videoFps":${videoEncoder?.fps ?: fps},"capture":"${videoEncoder?.capture ?: "gdi"}","input":"stream","controlLease":true,"cursorlessVideo":true,"cursorChannel":${cursorHub.available},"audio":${audioHub.available},"multiView":4,"instance":"$instance","displays":${devices.size}}""".toByteArray())
         }
     }
     server.createContext("/cursor") { ex ->

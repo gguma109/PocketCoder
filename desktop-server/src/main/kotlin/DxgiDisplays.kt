@@ -4,7 +4,8 @@ import java.io.File
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
-internal data class DxgiOutput(val index: Int, val rotation: Int)
+/** [monitorIndex] is the EnumDisplayMonitors position used by FFmpeg gfxcapture, or -1 when unknown. */
+internal data class DxgiOutput(val index: Int, val rotation: Int, val monitorIndex: Int = -1)
 
 /** Read-only DXGI enumeration: match actual desktop bounds, never guess DISPLAYn numbering. */
 internal fun dxgiDisplays(): Map<Rectangle, DxgiOutput> = try {
@@ -21,7 +22,7 @@ internal fun dxgiDisplays(): Map<Rectangle, DxgiOutput> = try {
         entries.associate { element ->
             val o = element.asJsonObject
             val area = Rectangle(o["X"].asInt, o["Y"].asInt, o["Width"].asInt, o["Height"].asInt)
-            val output = DxgiOutput(o["Index"].asInt, o["Rotation"].asInt)
+            val output = DxgiOutput(o["Index"].asInt, o["Rotation"].asInt, o["MonitorIndex"]?.asInt ?: -1)
             require(area.width > 0 && area.height > 0 && output.index in 0..31 && output.rotation in 1..4)
             area to output
         }

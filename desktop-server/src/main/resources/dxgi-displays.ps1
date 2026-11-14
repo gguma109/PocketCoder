@@ -7,7 +7,16 @@ public static class PocketDxgiOutputs {
     [DllImport("dxgi.dll")] static extern int CreateDXGIFactory(ref Guid iid, out IntPtr factory);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int Enumerate(IntPtr self, uint index, out IntPtr value);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int GetDescription(IntPtr self, IntPtr description);
-    public class Output { public int Index, X, Y, Width, Height, Rotation; }
+    public class Output { public int Index, X, Y, Width, Height, Rotation, MonitorIndex = -1; }
+    [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
+    delegate bool MonitorCallback(IntPtr monitor, IntPtr dc, ref Rect rect, IntPtr data);
+    [DllImport("user32.dll")] static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, MonitorCallback callback, IntPtr data);
+    // FFmpeg gfxcapture's monitor_idx counts monitors in EnumDisplayMonitors order.
+    static List<Rect> Monitors() {
+        var list = new List<Rect>();
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate(IntPtr m, IntPtr dc, ref Rect r, IntPtr d) { list.Add(r); return true; }, IntPtr.Zero);
+        return list;
+    }
     static T Method<T>(IntPtr self, int slot) {
         IntPtr method = Marshal.ReadIntPtr(Marshal.ReadIntPtr(self), slot * IntPtr.Size);
         return (T)(object)Marshal.GetDelegateForFunctionPointer(method, typeof(T));
@@ -34,6 +43,9 @@ public static class PocketDxgiOutputs {
                 } finally { Marshal.FreeHGlobal(description); Marshal.Release(output); }
             }
         } finally { if (adapter != IntPtr.Zero) Marshal.Release(adapter); if (factory != IntPtr.Zero) Marshal.Release(factory); }
+        var monitors = Monitors();
+        foreach (var o in result) for (int i = 0; i < monitors.Count; i++)
+            if (monitors[i].Left == o.X && monitors[i].Top == o.Y && monitors[i].Right - monitors[i].Left == o.Width && monitors[i].Bottom - monitors[i].Top == o.Height) { o.MonitorIndex = i; break; }
         return result;
     }
 }
