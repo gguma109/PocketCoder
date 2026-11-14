@@ -83,7 +83,7 @@ class RemoteViewer : Form {
         int count=Convert.ToInt32(health["displays"]);monitorCount=count;for(int i=0;i<count;i++){int index=i;Add("모니터 "+(i+1),async delegate{await SwitchDisplay(index);});}
         Add("창 / 전체",delegate{full=!full;ApplyWindow();});Add("소리 켬 / 끔",delegate{sound=!sound;StopProcess(ref audio);if(sound)Task.Run((Action)AudioLoop);});Add("연결 종료",delegate{Close();});Add("단축키 설정",delegate{ShortcutSettings();});
         displayMode.Text=hardware?"표시: 기본":"표시: 호환";displayMode.AutoSize=true;displayMode.Height=FixedDpiLayout.Px(34);displayMode.Padding=new Padding(FixedDpiLayout.Px(6));
-        displayMode.Click+=delegate{hardware=!hardware;Save("compatVideo",hardware?"false":"true");displayMode.Text=hardware?"표시: 기본":"표시: 호환";RestartVideo();};bar.Controls.Add(displayMode);
+        displayMode.Click+=delegate{hardware=!hardware;Save("compatVideo",hardware?"false":"true");displayMode.Text=hardware?"표시: 기본":"표시: 호환";RestartVideo("display mode "+(hardware?"hardware":"compat"));};bar.Controls.Add(displayMode);
         display=Convert.ToInt32(health["display"]);revision=Convert.ToInt64(health["displayRevision"]);
         canvas.MouseMove+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasMove(o,e);};canvas.MouseDown+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasDown(o,e);};canvas.MouseUp+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasUp(o,e);};
         MouseMove+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasMove(o,e);};MouseDown+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasDown(o,e);};MouseUp+=delegate(object o,MouseEventArgs e){if(mouseHook==IntPtr.Zero)CanvasUp(o,e);};
@@ -91,7 +91,7 @@ class RemoteViewer : Form {
         canvas.MouseCaptureChanged+=delegate{if(!canvas.Capture&&buttons.Count>0)ReleaseHeld();};
         keyboardProc=Keyboard;mouseProc=ObserveMouse;Shown+=async delegate{ApplyWindow();await Control("claim");joined=true;Task.Run((Action)InputLoop);Task.Run((Action)VideoLoop);Task.Run((Action)CursorLoop);Task.Run((Action)AudioLoop);timer.Start();};
         cursorTimer.Interval=16;cursorTimer.Tick+=delegate{UpdateLocalCursor();};cursorTimer.Start();
-        resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped)RestartVideo();};
+        resizeTimer.Interval=250;resizeTimer.Tick+=delegate{resizeTimer.Stop();if(joined&&!stopped&&videoWindow!=IntPtr.Zero){MoveWindow(videoWindow,0,0,canvas.Width,canvas.Height,true);ViewerLog("video resized to "+canvas.Width+"x"+canvas.Height+" (stream kept)");}};
         timer.Interval=1000;timer.Tick+=async delegate{if(++diagnosticTick%5==0)ViewerLog("mouse observed="+mouseObserved+" forwarded="+mouseForwarded+" active="+ActiveInput+" armed="+armed);await Poll();};
         Deactivate+=delegate{BeginInvoke((Action)delegate{if(!ViewerForeground)SuspendInput();});};Activated+=delegate{if(mine&&armed)SetControl(true);};
         FormClosing+=delegate{stopped=true;mine=false;timer.Stop();resizeTimer.Stop();cursorTimer.Stop();cursorOverlay.Close();if(remoteCursor!=null)remoteCursor.Dispose();DetachRendererInput();Unhook();nativeCursor.Dispose();ReleaseHeld();wake.Set();lock(requestLock){foreach(var r in streams)r.Abort();}StopProcess(ref player);StopProcess(ref audio);try{ReadJson(host,"/control",Fields("release"));}catch{}};
@@ -109,14 +109,14 @@ class RemoteViewer : Form {
     }
 
     async Task Poll(){if(polling||stopped||!joined)return;polling=true;int epoch=controlEpoch,pollVideoGeneration=generation;try{var s=await Task.Run(()=>ReadJson(host,"/status?client="+client,null));if(epoch==controlEpoch)SetControl(Convert.ToBoolean(((Dictionary<string,object>)s["control"])["mine"]));
-        if(switching||pollVideoGeneration!=generation)return;long next=Convert.ToInt64(s["displayRevision"]);display=Convert.ToInt32(s["display"]);if(next!=revision){revision=next;RestartVideo();}
+        if(switching||pollVideoGeneration!=generation)return;long next=Convert.ToInt64(s["displayRevision"]);display=Convert.ToInt32(s["display"]);if(next!=revision){revision=next;RestartVideo("server display revision changed (display "+display+")");}
     }catch{SetControl(false);state.Text="연결 확인 중…";}finally{polling=false;}}
-    void RestartVideo(){cursorOverlay.Hide();cursorReceived=0;DetachRendererInput();Interlocked.Increment(ref generation);var request=videoRequest;if(request!=null)request.Abort();StopProcess(ref player);videoWindow=IntPtr.Zero;}
+    void RestartVideo(string reason){ViewerLog("video restart: "+reason);cursorOverlay.Hide();cursorReceived=0;DetachRendererInput();Interlocked.Increment(ref generation);var request=videoRequest;if(request!=null)request.Abort();StopProcess(ref player);videoWindow=IntPtr.Zero;}
     async Task SwitchDisplay(int index){
         if(switching)return;switching=true;
         try{if(!mine){armed=true;await Control("claim");}if(!mine){state.Text="조작권을 가져오지 못했습니다.";return;}
             ReleaseHeld();var result=await Task.Run(()=>ReadJson(host,"/display","client="+client+"&index="+index));
-            display=Convert.ToInt32(result["display"]);revision=Convert.ToInt64(result["displayRevision"]);RestartVideo();
+            display=Convert.ToInt32(result["display"]);revision=Convert.ToInt64(result["displayRevision"]);RestartVideo("monitor switch to "+display);
         }catch(Exception e){state.Text="모니터 전환 실패: "+e.Message;}finally{switching=false;}
     }
     void Send(string body){if(stopped)return;if(Interlocked.Increment(ref queueSize)>512){Interlocked.Decrement(ref queueSize);BeginInvoke((Action)delegate{SuspendInput();Task.Run(()=>{try{ReadJson(host,"/control",Fields("release"));}catch{}});});return;}events.Enqueue("client="+client+"&screen="+display+"&"+body);wake.Set();}
@@ -256,7 +256,7 @@ class RemoteViewer : Form {
         Size target=Size.Empty;Invoke((Action)delegate{target=canvas.ClientSize;});p=Play(VideoPlayerArgs(hardware,target.Width,target.Height,fps));player=p;
         Process embedded=p;Task.Run(()=>{for(int i=0;i<100&&!stopped&&!embedded.HasExited;i++){embedded.Refresh();if(embedded.MainWindowHandle!=IntPtr.Zero){BeginInvoke((Action)delegate{if(stopped||embedded.HasExited||player!=embedded)return;DetachRendererInput();videoWindow=embedded.MainWindowHandle;uint rendererProcess;uint thread=GetWindowThreadProcessId(videoWindow,out rendererProcess);if(thread!=GetCurrentThreadId()&&AttachThreadInput(GetCurrentThreadId(),thread,true))rendererThread=thread;SetParent(videoWindow,canvas.Handle);SetWindowLong(videoWindow,-16,0x50000000);EnableWindow(videoWindow,false);MoveWindow(embedded.MainWindowHandle,0,0,canvas.Width,canvas.Height,true);SetWindowPos(embedded.MainWindowHandle,IntPtr.Zero,0,0,0,0,0x0013);Activate();canvas.Focus();});break;}Thread.Sleep(50);}});
         while(!stopped&&gen==generation){int size=Int(input);Bytes(input,8);if(size<1||size>8388608)throw new IOException("영상 패킷 크기 오류");var b=Bytes(input,size);p.StandardInput.BaseStream.Write(b,0,b.Length);p.StandardInput.BaseStream.Flush();}
-    }}catch(Exception e){if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0){hardware=false;if(IsHandleCreated&&!stopped)BeginInvoke((Action)delegate{displayMode.Text="표시: 호환";});}if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;if(videoRequest==r)videoRequest=null;}if(!stopped&&gen==generation)Thread.Sleep(300);}}
+    }}catch(Exception e){if(!stopped&&gen==generation)ViewerLog("video stream error: "+e.GetType().Name+" "+e.Message+(p!=null&&p.HasExited?" (player exit "+p.ExitCode+")":""));if(!stopped&&IsHandleCreated)BeginInvoke((Action)delegate{state.Text="영상 재연결: "+e.Message;});}finally{if(r!=null)Forget(r);if(p!=null){try{if(p.HasExited&&p.ExitCode!=0){ViewerLog("player exited "+p.ExitCode+" with "+(hardware?"hardware":"compat")+" decoding; switching to compat");hardware=false;if(IsHandleCreated&&!stopped)BeginInvoke((Action)delegate{displayMode.Text="표시: 호환";});}if(!p.HasExited)p.Kill();p.Dispose();}catch{}}if(player==p)player=null;if(videoRequest==r)videoRequest=null;}if(!stopped&&gen==generation)Thread.Sleep(300);}}
     // Cursor state never waits for H.264 encoding/decoding. Predictions do not move the OS mouse.
     void CursorLoop(){while(!stopped){try{
         int expectedGeneration=generation;string known=cursorShape;
