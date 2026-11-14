@@ -135,7 +135,7 @@ class MainActivity : Activity() {
             background = round(panel, 14); setPadding(dp(6), dp(6), dp(6), dp(4))
         }
         val mouseHeader = row().apply { gravity = Gravity.CENTER_VERTICAL }
-        mouseHeader.addView(text("마우스 · 두 손가락 스크롤", 10f, muted), LinearLayout.LayoutParams(0, dp(28), 1f))
+        mouseHeader.addView(text(if (compactLandscape) "마우스" else "마우스 · 두 손가락 스크롤", 10f, muted), LinearLayout.LayoutParams(0, dp(28), 1f))
         mouseToggleButton = tile("접기", white, keyBg, 56, 28) { toggleMouse() }
         mouseToggleButton.tag = "mouseToggle"
         dragButton = tile("드래그", white, keyBg, 62, 48) {
@@ -181,29 +181,43 @@ class MainActivity : Activity() {
             onWheel = { send("wheel", "amount" to "$it") },
             onButton = { down -> send(if (down) "down" else "up", "button" to "left") }
         ).apply { tag = "mouseTrackpad"; contentDescription = "마우스 이동: 탭으로 클릭, 길게 눌러 우클릭"; sensitivity = prefs.getFloat("sensitivity", 2.1f); acceleration = prefs.getBoolean("acceleration", false) }
-        padRow.addView(trackpad, LinearLayout.LayoutParams(0, dp(100), 1f))
-        val mouseButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "mouseSideButtons" }
-        val clicks = row()
-        listOf("좌클릭", "우클릭").forEachIndexed { index, label ->
-            clicks.addView(tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 62, 48) {
+        val padHeight = if (compactLandscape) 72 else 100
+        padRow.addView(trackpad, LinearLayout.LayoutParams(0, dp(padHeight), 1f))
+        val clickButtons = listOf("좌클릭", "우클릭").mapIndexed { index, label ->
+            tile(label, if (index == 0) navy else white, if (index == 0) gold else keyBg, 62, 48) {
                 send("click", "button" to if (index == 0) "left" else "right")
-            }.apply { textSize = 11f; contentDescription = label }, LinearLayout.LayoutParams(dp(62), dp(48)).apply { if (index == 1) leftMargin = dp(4) })
+            }.apply { textSize = 11f; contentDescription = label }
         }
-        mouseButtons.addView(clicks, LinearLayout.LayoutParams(match, dp(48)))
-        val modes = row()
         dragButton.apply { tag = "mouseDrag"; textSize = 11f; contentDescription = "드래그 끔: 켜면 이동할 때 왼쪽 버튼을 누릅니다" }
         controlButton.apply { tag = "mouseControl"; textSize = 11f; contentDescription = "원격 조작권 가져오기" }
-        modes.addView(dragButton, LinearLayout.LayoutParams(dp(62), dp(48)))
-        modes.addView(controlButton, LinearLayout.LayoutParams(dp(62), dp(48)).apply { leftMargin = dp(4) })
-        mouseButtons.addView(modes, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(4) })
-        padRow.addView(mouseButtons, LinearLayout.LayoutParams(dp(128), dp(100)).apply { leftMargin = dp(6) })
+        val mouseButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "mouseSideButtons" }
+        if (compactLandscape) {
+            val actions = row()
+            (clickButtons + listOf(dragButton, controlButton)).forEachIndexed { index, button ->
+                button.setAutoSizeTextTypeUniformWithConfiguration(8, 11, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+                actions.addView(button, LinearLayout.LayoutParams(0, dp(48), 1f).apply { if (index > 0) leftMargin = dp(4) })
+            }
+            mouseButtons.addView(actions, LinearLayout.LayoutParams(match, dp(48)))
+        } else {
+            val clicks = row()
+            clickButtons.forEachIndexed { index, button ->
+                clicks.addView(button, LinearLayout.LayoutParams(dp(62), dp(48)).apply { if (index > 0) leftMargin = dp(4) })
+            }
+            mouseButtons.addView(clicks, LinearLayout.LayoutParams(match, dp(48)))
+            val modes = row()
+            modes.addView(dragButton, LinearLayout.LayoutParams(dp(62), dp(48)))
+            modes.addView(controlButton, LinearLayout.LayoutParams(dp(62), dp(48)).apply { leftMargin = dp(4) })
+            mouseButtons.addView(modes, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(4) })
+            padRow.addView(mouseButtons, LinearLayout.LayoutParams(dp(128), dp(100)).apply { leftMargin = dp(6) })
+        }
         scrollStrip = ScrollStripView(this) { send("wheel", "amount" to "$it") }.apply { tag = "mouseScroll" }
-        padRow.addView(scrollStrip, LinearLayout.LayoutParams(dp(36), dp(100)).apply { leftMargin = dp(6) })
-        mousePane.addView(padRow, LinearLayout.LayoutParams(match, dp(100)))
+        padRow.addView(scrollStrip, LinearLayout.LayoutParams(dp(36), dp(padHeight)).apply { leftMargin = dp(6) })
+        mousePane.addView(padRow, LinearLayout.LayoutParams(match, dp(padHeight)))
+        if (compactLandscape) mousePane.addView(mouseButtons, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(4) })
         panes.addView(mousePane, LinearLayout.LayoutParams(match, wrap).apply { gravity = Gravity.CENTER_HORIZONTAL })
 
         composer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "composer" }
-        val composeRow = row().apply { gravity = Gravity.CENTER_VERTICAL }
+        val composeRow = row().apply { gravity = Gravity.CENTER_VERTICAL; if (compactLandscape) orientation = LinearLayout.VERTICAL }
         typed = entry("여기에 입력", false).apply {
             setSingleLine(false); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             maxLines = 3; imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
@@ -213,12 +227,18 @@ class MainActivity : Activity() {
             setOnClickListener { setMouseExpanded(false) }
         }
         val composerHeight = if (compactLandscape) 32 else 44
-        composeRow.addView(typed, LinearLayout.LayoutParams(0, dp(composerHeight), 1f))
-        composeRow.addView(tile("전송", navy, gold, 52, composerHeight) { sendTyped() }, LinearLayout.LayoutParams(dp(52), dp(composerHeight)).apply { leftMargin = dp(5) })
-        composeRow.addView(tile("↵", white, keyBg, 36, composerHeight) { pressKey("ENTER") }.apply { textSize = 18f; contentDescription = "Enter" }, LinearLayout.LayoutParams(dp(36), dp(composerHeight)).apply { leftMargin = dp(4) })
+        composeRow.addView(typed, if (compactLandscape) LinearLayout.LayoutParams(match, dp(composerHeight)) else LinearLayout.LayoutParams(0, dp(composerHeight), 1f))
+        val composeActions = if (compactLandscape) row().also { composeRow.addView(it, LinearLayout.LayoutParams(match, dp(composerHeight)).apply { topMargin = dp(4) }) } else composeRow
+        fun addComposeAction(button: TextView, width: Int, margin: Int, weight: Float = 1f) {
+            composeActions.addView(button, if (compactLandscape) LinearLayout.LayoutParams(0, dp(composerHeight), weight).apply { leftMargin = dp(margin) }
+                else LinearLayout.LayoutParams(dp(width), dp(composerHeight)).apply { leftMargin = dp(margin) })
+        }
+        addComposeAction(tile("전송", navy, gold, 52, composerHeight) { sendTyped() }, 52, if (compactLandscape) 0 else 5)
+        addComposeAction(tile("↵", white, keyBg, 36, composerHeight) { pressKey("ENTER") }.apply { textSize = 18f; contentDescription = "Enter" }, 36, 4, .65f)
         clearDraftButton = tile("비우기", muted, keyBg, 44, composerHeight) { typed.text.clear() }.apply { contentDescription = "입력창 비우기" }
-        composeRow.addView(clearDraftButton, LinearLayout.LayoutParams(dp(44), dp(composerHeight)).apply { leftMargin = dp(4) })
-        composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(composerHeight + 8)))
+        addComposeAction(clearDraftButton, 44, 4)
+        composer.addView(composeRow, LinearLayout.LayoutParams(match, dp(if (compactLandscape) composerHeight * 2 + 12 else composerHeight + 8)))
+
         controls.addView(composer)
         workspace = RemoteWorkspace(this, screen, controls).apply { tag = "workspace" }
         root.addView(workspace, LinearLayout.LayoutParams(match, 0, 1f))
@@ -421,7 +441,7 @@ class MainActivity : Activity() {
         controlScroll.visibility = if (expanded) View.VISIBLE else View.GONE
         mouseToggleButton.text = if (expanded) "접기" else "펼치기"
         shortcutStrip.visibility = if (compactLandscape && !expanded) View.GONE else View.VISIBLE
-        workspace.controlHeightDp = if (expanded) 228 else if (compactLandscape) 88 else 132
+        workspace.controlHeightDp = if (expanded) { if (compactLandscape) 280 else 228 } else 132
     }
 
     private fun toggleMouse() {

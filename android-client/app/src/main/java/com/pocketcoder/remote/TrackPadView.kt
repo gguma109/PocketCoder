@@ -43,10 +43,12 @@ class TrackPadView(
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f
         canvas.drawRoundRect(1f, 1f, w-1, h-1, 25f, 25f, paint)
-        canvas.drawCircle(w/2, h/2, minOf(w, h)*0.24f, paint)
+        val compact = h < 88 * resources.displayMetrics.density
+        val centerY = if (compact) h * .40f else h / 2
+        canvas.drawCircle(w/2, centerY, minOf(w, h) * if (compact) .22f else .24f, paint)
         paint.style = Paint.Style.FILL
         paint.color = Color.rgb(244, 187, 86)
-        canvas.drawCircle(w/2, h/2, minOf(w, h)*0.065f, paint)
+        canvas.drawCircle(w/2, centerY, minOf(w, h)*0.065f, paint)
         paint.color = Color.rgb(158, 171, 192)
         paint.textSize = 11 * resources.displayMetrics.density
         paint.textAlign = Paint.Align.CENTER

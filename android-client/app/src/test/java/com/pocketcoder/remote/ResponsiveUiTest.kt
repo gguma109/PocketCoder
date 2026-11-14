@@ -94,11 +94,13 @@ class ResponsiveUiTest {
             val deck = decor.findViewWithTag<View>("controlDeck")
             seedScreen(screen)
             assertTrue(deck.left >= screen.right)
+            assertEquals("Landscape controls use 30 percent", (decor.findViewWithTag<View>("workspace").width * .30f).toInt(), deck.width)
             assertTrue(screen.width > deck.width)
             assertEquals(screen.height, deck.height)
             checkCompactMouse(decor)
             save(decor, "s25-landscape")
             val typed = decor.findViewWithTag<android.widget.EditText>("phoneInput")
+            assertTrue("Landscape input must use the full narrow panel", typed.width >= deck.width * .85f)
             typed.requestFocus(); typed.performClick()
             measure(decor, 780, 220)
             assertTrue(screen.height > 0)
@@ -152,7 +154,7 @@ class ResponsiveUiTest {
         for (view in listOf(scroll, drag, control, button(decor, "좌클릭"), button(decor, "우클릭"))) {
             val bounds = Rect(); assertTrue(view.getGlobalVisibleRect(bounds))
             assertEquals("Mouse control must not be clipped", view.height, bounds.height())
-            assertTrue("Mouse actions belong beside the pad", bounds.left >= padRect.right)
+            assertTrue("Actions must be beside or below the pad", bounds.left >= padRect.right || bounds.top >= padRect.bottom)
         }
         assertTrue("Small screens still need enough steering room", pad.width >= 100 * pad.resources.displayMetrics.density)
     }

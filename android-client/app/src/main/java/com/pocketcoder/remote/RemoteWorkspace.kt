@@ -20,7 +20,7 @@ class RemoteWorkspace(context: Context, private val remote: View, private val co
         // Only use columns when the device configuration is actually landscape.
         sideBySide = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE &&
             w > h && w >= dp(600)
-        val controlWidth = if (expanded) 0 else if (sideBySide) minOf(dp(360), (w * .46f).toInt()) else w
+        val controlWidth = if (expanded) 0 else if (sideBySide) (w * .30f).toInt() else w
         val controlHeight = if (expanded) 0 else if (sideBySide) h else minOf(dp(controlHeightDp), (h * .62f).toInt())
         controls.measure(MeasureSpec.makeMeasureSpec(controlWidth, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(controlHeight, MeasureSpec.EXACTLY))
         remote.measure(MeasureSpec.makeMeasureSpec(if (sideBySide) w - controlWidth else w, MeasureSpec.EXACTLY),
