@@ -32,7 +32,7 @@ internal class CursorHub : Closeable {
     }
     private fun start() {
         snapshot = null; val current = ++generation; lastStart = System.nanoTime()
-        val capture = ProcessBuilder(executable.absolutePath).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val capture = ProcessBuilder(executable.absolutePath, "--parent", ProcessHandle.current().pid().toString()).redirectError(ProcessBuilder.Redirect.DISCARD).start()
         process = capture
         Thread({
             var previousShape: com.google.gson.JsonElement? = null

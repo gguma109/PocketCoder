@@ -27,8 +27,16 @@ class PocketCoderCursor {
         }finally{if(ii.mask!=IntPtr.Zero)DeleteObject(ii.mask);if(ii.color!=IntPtr.Zero)DeleteObject(ii.color);}
     }
     [DllImport("user32.dll")]static extern IntPtr LoadCursor(IntPtr instance,int id);
+    // .NET Framework console streams silently ignore broken pipes, so a helper never notices that the server
+    // was killed (the PC window stops it with TerminateProcess, which skips shutdown hooks). Exit with the parent.
+    static void ExitWithParent(string[] args){
+        int index=Array.IndexOf(args,"--parent");if(index<0||index+1>=args.Length)return;int pid;
+        if(!int.TryParse(args[index+1],out pid))Environment.Exit(2);
+        System.Diagnostics.Process parent;try{parent=System.Diagnostics.Process.GetProcessById(pid);}catch(ArgumentException){Environment.Exit(0);return;}
+        var watcher=new Thread(()=>{try{parent.WaitForExit();}catch{}Environment.Exit(0);});watcher.IsBackground=true;watcher.Start();
+    }
     static void Main(string[] args) {
-        SetProcessDPIAware();var json=new JavaScriptSerializer();
+        ExitWithParent(args);SetProcessDPIAware();var json=new JavaScriptSerializer();
         if(args.Length>0&&args[0]=="--self-test"){foreach(int id in new[]{32512,32513,32649}){
             var data=json.Deserialize<System.Collections.Generic.Dictionary<string,object>>(json.Serialize(Shape(LoadCursor(IntPtr.Zero,id))));
             using(var bytes=new MemoryStream(Convert.FromBase64String(Convert.ToString(data["png"]))))using(var image=new Bitmap(bytes)){

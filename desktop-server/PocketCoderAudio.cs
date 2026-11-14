@@ -28,7 +28,16 @@ class PocketCoderAudio {
         }
         return result;
     }
+    // .NET Framework console streams silently ignore broken pipes, so a helper never notices that the server
+    // was killed (the PC window stops it with TerminateProcess, which skips shutdown hooks). Exit with the parent.
+    static void ExitWithParent(string[] args){
+        int index=Array.IndexOf(args,"--parent");if(index<0||index+1>=args.Length)return;int pid;
+        if(!int.TryParse(args[index+1],out pid))Environment.Exit(2);
+        System.Diagnostics.Process parent;try{parent=System.Diagnostics.Process.GetProcessById(pid);}catch(ArgumentException){Environment.Exit(0);return;}
+        var watcher=new Thread(()=>{try{parent.WaitForExit();}catch{}Environment.Exit(0);});watcher.IsBackground=true;watcher.Start();
+    }
     [MTAThread] static int Main(string[] args) {
+        ExitWithParent(args);
         if(args.Length==1 && args[0]=="--self-test") {
             if(Pcm(2)!=32767 || Pcm(-2)!=-32767 || Pcm(Single.NaN)!=0) return 1;
             var data=ConvertPcm(BitConverter.GetBytes(.5f),1,1,32,true);

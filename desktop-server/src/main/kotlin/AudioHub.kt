@@ -21,7 +21,7 @@ internal class AudioHub : Closeable {
         val current = ++generation
         format = CompletableFuture()
         val header = format
-        val capture = ProcessBuilder(executable.absolutePath).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        val capture = ProcessBuilder(executable.absolutePath, "--parent", ProcessHandle.current().pid().toString()).redirectError(ProcessBuilder.Redirect.INHERIT).start()
         process = capture
         Thread({
             try {
