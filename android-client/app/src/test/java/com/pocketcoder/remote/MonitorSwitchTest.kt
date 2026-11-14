@@ -3,6 +3,7 @@ package com.pocketcoder.remote
 import android.os.Looper
 import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,6 +20,9 @@ class MonitorSwitchTest {
         val logins = AtomicInteger()
         val switches = AtomicInteger()
         val selected = AtomicInteger(-1)
+        val ready = AtomicBoolean(false)
+        val serverDisplay = AtomicInteger(0)
+        val revision = AtomicInteger(0)
         val thread = Thread({
             try {
                 while (!server.isClosed) server.accept().use { socket ->
@@ -31,13 +35,15 @@ class MonitorSwitchTest {
                         if (header.isEmpty()) break
                         if (header.startsWith("Content-Length:", true)) length = header.substringAfter(':').trim().toInt()
                     }
-                    repeat(length) { reader.read() }
+                    val form = CharArray(length) { reader.read().toChar() }
                     val body = if (request.contains("/health")) {
                         healthCount.incrementAndGet()
-                        """{"auth":"tailscale","video":"h264","videoFps":60,"stream":"mjpeg","displays":2,"display":0}"""
+                        """{"auth":"tailscale","video":"h264","videoFps":60,"stream":"mjpeg","displays":2,"display":${serverDisplay.get()},"displayRevision":${revision.get()}}"""
                     } else {
                         assertTrue(request.contains("/display"))
-                        switches.incrementAndGet(); "{}"
+                        val index = String(form).split('&').first { it.startsWith("index=") }.substringAfter('=').toInt()
+                        serverDisplay.set(index); val next = revision.incrementAndGet()
+                        switches.incrementAndGet(); """{"display":$index,"displayRevision":$next}"""
                     }.toByteArray()
                     socket.getOutputStream().apply {
                         write("HTTP/1.1 200 OK\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
@@ -46,7 +52,7 @@ class MonitorSwitchTest {
                 }
             } catch (_: java.net.SocketException) { }
         }).apply { isDaemon = true; start() }
-        val client = RemoteClient({ _, _ -> }, {}, onLoginConnected = { logins.incrementAndGet() }, onDisplays = { _, index -> selected.set(index) })
+        val client = RemoteClient({ online, _ -> ready.set(online) }, {}, onLoginConnected = { logins.incrementAndGet() }, onDisplays = { _, index -> selected.set(index) })
         fun awaitSelection(index: Int) {
             val deadline = System.nanoTime() + 3_000_000_000L
             while (selected.get() != index && System.nanoTime() < deadline) {
@@ -57,6 +63,14 @@ class MonitorSwitchTest {
         try {
             client.connect("127.0.0.1:${server.localPort}"); client.resume()
             awaitSelection(0)
+            // Display metadata arrives before connect() finishes enabling control. Wait for
+            // the real ready/login callbacks rather than racing that background handoff.
+            val deadline = System.nanoTime() + 3_000_000_000L
+            while ((!ready.get() || logins.get() == 0) && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5)
+            }
+            assertTrue("Connection must be ready before switching", ready.get())
+            assertEquals(1, logins.get())
             client.selectDisplay(1); awaitSelection(1)
             client.selectDisplay(0); awaitSelection(0)
             assertEquals(2, switches.get())
